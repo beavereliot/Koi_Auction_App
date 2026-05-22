@@ -5,10 +5,37 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <title>Pikes Peak Koi Auction</title>
     <link rel="stylesheet" href="style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   </head>
   <body>
-    <h1>Pikes Peak Koi & Water Garden Society</h1>
-    <p>2025 Re-Homing Auction</p>
+    <div class="app">
+
+      <div class="topbar">
+        <div class="topbar-inner">
+          <div class="logo">🐟</div>
+          <div class="topbar-text">
+            <div class="topbar-title">Pikes Peak Koi & Water Garden Society</div>
+            <div class="topbar-sub">2025 Re-Homing Auction</div>
+          </div>
+          <div class="live-badge"><span class="live-dot"></span> Live</div>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <div class="nav-item active" data-page="dashboard">📊 Dashboard</div>
+        <div class="nav-item" data-page="donors">👥 Donors</div>
+        <div class="nav-item" data-page="fish">🐠 Fish</div>
+        <div class="nav-item" data-page="bidders">🪪 Bidders</div>
+        <div class="nav-item" data-page="scribe">✍️ Scribe</div>
+        <div class="nav-item" data-page="checkout">🧾 Checkout</div>
+        <div class="nav-item" data-page="misc">🛒 Misc</div>
+      </nav>
+
+      <main class="content" id="main-content">
+        <p style="color:#4db8d4; padding:2rem;">Loading...</p>
+      </main>
+
+    </div>
     <script src="app.js"></script>
   </body>
 </html>
