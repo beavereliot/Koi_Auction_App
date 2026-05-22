@@ -1,0 +1,1 @@
+console.log("Koi Auction App Loaded");
