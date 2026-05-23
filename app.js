@@ -60,6 +60,7 @@ function loadPage(page) {
     case 'checkout':  renderCheckout();  break;
     case 'misc':      renderMisc();      break;
     case 'admin':     renderAdmin();     break;
+    case 'manual':    renderManual();    break;
   }
 }
 
@@ -1719,6 +1720,294 @@ function startAutoRefresh() {
 // ============================================
 function closeModal(id) {
   document.getElementById(id).classList.remove('open');
+}
+
+// ============================================
+// USER MANUAL
+// ============================================
+function renderManual() {
+  setContent(`
+    <div class="page-header">
+      <div class="section-label">User manual</div>
+    </div>
+    <p style="font-size:13px;color:#1a5f7a;margin-bottom:16px;">Welcome to the Pikes Peak Koi & Water Garden Society Auction App. This manual walks you through every section of the app. Click any section below to expand it.</p>
+
+    <div id="manual-accordion"></div>
+  `);
+
+  const sections = [
+    {
+      title: '📊 Overview — How the app works',
+      content: `
+        <p>This app is used to manage every part of the koi auction — from setting up fish before the event, to recording sales during the auction, to checking out bidders at the end.</p>
+        <br>
+        <p>Here is the general flow of the auction:</p>
+        <ol style="margin-left:20px;margin-top:8px;line-height:2;">
+          <li><strong>Before the auction:</strong> Add donors, create tanks, and add fish to each tank. Register bidders as they arrive.</li>
+          <li><strong>During the auction:</strong> Use the Scribe tab to record each fish sale as it happens.</li>
+          <li><strong>After the auction:</strong> Use the Misc tab to add any additional purchases. Use the Checkout tab to total up each bidder's bill and record their payment.</li>
+        </ol>
+        <br>
+        <p>The app works on any device — phones, tablets, and laptops. Multiple volunteers can use it at the same time from different devices. All data is shared and updates automatically every 30 seconds.</p>
+      `
+    },
+    {
+      title: '👥 Donors tab — Adding fish donors',
+      content: `
+        <p>Before adding any fish, you need to add the people who donated or brought fish to the auction. These are called <strong>donors</strong>.</p>
+        <br>
+        <p><strong>How to add a donor:</strong></p>
+        <ol style="margin-left:20px;margin-top:8px;line-height:2;">
+          <li>Click the <strong>Donors</strong> tab in the navigation bar at the top.</li>
+          <li>Click the green <strong>+ Add donor</strong> button in the top right.</li>
+          <li>Fill in the donor's first name, last name, phone number, and email.</li>
+          <li>Select the donor <strong>Type</strong> — this determines how much of the sale price they receive back:
+            <ul style="margin-left:20px;">
+              <li><strong>Pickup</strong> — the club picks up the fish from the donor</li>
+              <li><strong>Dropoff</strong> — the donor drops off the fish themselves</li>
+              <li><strong>Donation</strong> — the donor gives the fish for free, they receive nothing back</li>
+            </ul>
+          </li>
+          <li>Enter the number of fish they brought.</li>
+          <li>Click <strong>Save donor</strong>.</li>
+        </ol>
+        <br>
+        <p><strong>Editing a donor:</strong> Click the orange <strong>Edit</strong> button next to any donor to update their information.</p>
+        <br>
+        <p><strong>Deleting a donor:</strong> Click the red <strong>Delete</strong> button. Note — if a donor has fish linked to them, you must delete or reassign those fish first before you can delete the donor.</p>
+        <br>
+        <p style="background:#fef5e0;padding:10px;border-radius:7px;font-size:13px;">⚠️ <strong>Important:</strong> Always add donors before adding fish. The fish entry form requires you to select a donor, so if no donors exist you will not be able to add fish.</p>
+      `
+    },
+    {
+      title: '🐠 Fish tab — Setting up tanks and fish',
+      content: `
+        <p>The Fish tab is where you create tanks and add individual fish to each tank. Every fish in the auction must be entered here before the auction begins.</p>
+        <br>
+        <p><strong>Step 1 — Create a tank:</strong></p>
+        <ol style="margin-left:20px;margin-top:8px;line-height:2;">
+          <li>Click the <strong>Fish</strong> tab in the navigation bar.</li>
+          <li>Click the <strong>+ New tank</strong> button.</li>
+          <li>Enter a tank letter (e.g. A, B, C) and an optional description (e.g. "Large koi").</li>
+          <li>Click <strong>Create tank</strong>.</li>
+        </ol>
+        <br>
+        <p><strong>Step 2 — Add fish to a tank:</strong></p>
+        <ol style="margin-left:20px;margin-top:8px;line-height:2;">
+          <li>Find the tank card and click <strong>+ Add fish</strong>.</li>
+          <li>Enter the fish number (e.g. 1, 2, 3 — must be unique within that tank).</li>
+          <li>Enter a description of the fish (e.g. "Kohaku", "Tancho").</li>
+          <li>Select the donor from the dropdown. The type will automatically fill in based on that donor's type. You can change it if needed.</li>
+          <li>Click <strong>Save fish</strong>.</li>
+        </ol>
+        <br>
+        <p>Each fish gets a unique ID made up of the tank letter and fish number — for example, Tank A Fish 1 = <strong>A1</strong>. This ID is what the scribe uses during the auction.</p>
+        <br>
+        <p><strong>Filtering by tank:</strong> Use the tank chips at the top to filter the view to a specific tank, or click <strong>All</strong> to see every fish.</p>
+        <br>
+        <p><strong>Fish status:</strong> Each fish shows as <strong>Available</strong> (blue) or <strong>Sold</strong> (green) once a sale is recorded in the Scribe tab.</p>
+        <br>
+        <p><strong>Editing a fish:</strong> Click the orange <strong>Edit</strong> button on any fish row to update its details.</p>
+        <br>
+        <p><strong>Deleting a fish or tank:</strong> Click the red <strong>Delete</strong> button. Deleting a tank will also delete all fish inside it.</p>
+        <br>
+        <p style="background:#fef5e0;padding:10px;border-radius:7px;font-size:13px;">⚠️ <strong>Important:</strong> Two fish in the same tank cannot have the same number. The app will block this and show an error.</p>
+      `
+    },
+    {
+      title: '🪪 Bidders tab — Registering auction participants',
+      content: `
+        <p>Every person who wants to bid at the auction must be registered as a bidder. Each bidder gets a unique number that is used throughout the auction to track their purchases.</p>
+        <br>
+        <p><strong>How to register a bidder:</strong></p>
+        <ol style="margin-left:20px;margin-top:8px;line-height:2;">
+          <li>Click the <strong>Bidders</strong> tab in the navigation bar.</li>
+          <li>Click the green <strong>+ Register bidder</strong> button.</li>
+          <li>Enter a bidder number. This is the number printed on their paddle or card — it must be unique.</li>
+          <li>Enter their first name, last name, phone, and email.</li>
+          <li>Select whether they are a club member.</li>
+          <li>Click <strong>Save</strong>.</li>
+        </ol>
+        <br>
+        <p><strong>Bidder status badges:</strong></p>
+        <ul style="margin-left:20px;margin-top:8px;line-height:2;">
+          <li><span style="background:#fdecea;color:#922b21;padding:2px 8px;border-radius:20px;font-size:12px;font-weight:bold;">Unpaid</span> — has not checked out yet</li>
+          <li><span style="background:#fef5e0;color:#854F0B;padding:2px 8px;border-radius:20px;font-size:12px;font-weight:bold;border:1px solid #e8c44a;">Partially paid</span> — has made a partial payment but still owes money</li>
+          <li><span style="background:#e0f9f0;color:#0a6640;padding:2px 8px;border-radius:20px;font-size:12px;font-weight:bold;">Paid $0.00</span> — has paid in full, shows the total amount paid</li>
+        </ul>
+        <br>
+        <p><strong>Editing a bidder:</strong> Click the orange <strong>Edit</strong> button. Note — the bidder number cannot be changed once set.</p>
+        <br>
+        <p><strong>Deleting a bidder:</strong> Click the red <strong>Delete</strong> button. If the bidder has any sales or purchases recorded, you must delete those records first.</p>
+        <br>
+        <p style="background:#e8f4f8;padding:10px;border-radius:7px;font-size:13px;">💡 <strong>Tip:</strong> You can register bidders before, during, or after the auction. It is best to register them as they arrive so the scribe has their number ready.</p>
+      `
+    },
+    {
+      title: '✍️ Scribe tab — Recording sales during the auction',
+      content: `
+        <p>The Scribe tab is used during the live auction. As each fish is sold, the scribe enters the fish ID, the winning bidder's number, and the final sale price.</p>
+        <br>
+        <p><strong>How to record a sale:</strong></p>
+        <ol style="margin-left:20px;margin-top:8px;line-height:2;">
+          <li>Click the <strong>Scribe</strong> tab in the navigation bar.</li>
+          <li>In the <strong>Fish ID</strong> field, type the tank letter and fish number together — for example <strong>A1</strong> for Tank A Fish 1, or <strong>E14</strong> for Tank E Fish 14.</li>
+          <li>In the <strong>Bidder #</strong> field, type the winning bidder's number.</li>
+          <li>In the <strong>Sale price</strong> field, type the final sale price in dollars.</li>
+          <li>Press <strong>Enter</strong> or click <strong>✓ Record sale</strong>.</li>
+        </ol>
+        <br>
+        <p>If the sale is recorded successfully you will see a green <strong>Sale recorded!</strong> message and the fields will clear automatically so you are ready for the next fish.</p>
+        <br>
+        <p><strong>Sales log:</strong> All recorded sales appear in the log below the entry form, showing the fish ID, description, winning bidder, and price. The most recent sale appears at the top.</p>
+        <br>
+        <p><strong>Deleting a sale:</strong> If you made a mistake, click the red <strong>Delete</strong> button on that row in the sales log to remove it. You can then re-enter the correct information.</p>
+        <br>
+        <p style="background:#fdecea;padding:10px;border-radius:7px;font-size:13px;">🚫 <strong>The app will block these common mistakes:</strong></p>
+        <ul style="margin-left:20px;margin-top:8px;line-height:2;font-size:13px;">
+          <li>Recording a sale for a fish that has already been sold</li>
+          <li>Entering a fish ID that does not exist</li>
+          <li>Entering a bidder number that has not been registered</li>
+          <li>Entering a sale price of $0 or a negative number</li>
+        </ul>
+      `
+    },
+    {
+      title: '🛒 Misc tab — Additional purchases',
+      content: `
+        <p>The Misc tab is used to record any purchases that are not auction fish — such as small koi, food, memberships, or other items sold at the event.</p>
+        <br>
+        <p><strong>How to add a misc purchase:</strong></p>
+        <ol style="margin-left:20px;margin-top:8px;line-height:2;">
+          <li>Click the <strong>Misc</strong> tab in the navigation bar.</li>
+          <li>Enter the bidder's number in the <strong>Bidder #</strong> field.</li>
+          <li>Select the item from the <strong>Item</strong> dropdown. The price is shown next to each item.</li>
+          <li>Enter the quantity.</li>
+          <li>Click <strong>+ Add purchase</strong>.</li>
+        </ol>
+        <br>
+        <p>The purchase log below shows all misc purchases recorded so far, organized by most recent first.</p>
+        <br>
+        <p><strong>Editing a purchase:</strong> Click the orange <strong>Edit</strong> button on any row to change the item name, quantity, or price.</p>
+        <br>
+        <p><strong>Deleting a purchase:</strong> Click the red <strong>Delete</strong> button to remove a purchase entirely.</p>
+        <br>
+        <p style="background:#e8f4f8;padding:10px;border-radius:7px;font-size:13px;">💡 <strong>Tip:</strong> Misc purchases can be added at any time — before, during, or after the auction. They will automatically appear in the bidder's checkout total.</p>
+      `
+    },
+    {
+      title: '🧾 Checkout tab — Taking payment from bidders',
+      content: `
+        <p>The Checkout tab is used after the auction to calculate each bidder's total bill and record their payment.</p>
+        <br>
+        <p><strong>How to check out a bidder:</strong></p>
+        <ol style="margin-left:20px;margin-top:8px;line-height:2;">
+          <li>Click the <strong>Checkout</strong> tab in the navigation bar.</li>
+          <li>Type the bidder's number and click <strong>Look up</strong>.</li>
+          <li>The app will show all the fish they won, any misc purchases, and the grand total due.</li>
+          <li>Select the payment method — Cash, Credit Card, or Check.</li>
+          <li>If paying by check or credit card, optionally enter the check number or last 4 digits of the card.</li>
+          <li>Click <strong>✓ Record payment</strong>.</li>
+        </ol>
+        <br>
+        <p><strong>Partial payments:</strong> If a bidder can only pay part of their total, change the amount in the payment field to the partial amount. The app will record it and mark them as <strong>Partially paid</strong>. When they return to pay the rest, look them up again and record the remaining amount.</p>
+        <br>
+        <p><strong>Refreshing the total:</strong> Click the <strong>↻ Refresh</strong> button to reload the bidder's total in case any new purchases were added after you looked them up.</p>
+        <br>
+        <p><strong>Printing a receipt:</strong> Click <strong>🖨️ Print receipt</strong> to open a print dialog. The receipt includes all fish purchased, misc purchases, payment history, and whether they are paid in full. You can print two copies — one for the bidder and one for your records. To save as a PDF instead of printing, select "Save as PDF" in your printer options.</p>
+        <br>
+        <p><strong>Already paid bidders:</strong> If a bidder has already paid in full, their checkout screen will show a green "Paid in full" message and the payment button will be hidden. You can still print their receipt.</p>
+        <br>
+        <p style="background:#e8f4f8;padding:10px;border-radius:7px;font-size:13px;">💡 <strong>Tip:</strong> Always click Refresh right before taking payment to make sure the total includes any last-minute purchases added from another device.</p>
+      `
+    },
+    {
+      title: '⚙️ Admin tab — Managing the auction',
+      content: `
+        <p>The Admin tab is password-protected and is used by the auction organizer to manage settings, years, and data. Volunteers do not need to access this tab.</p>
+        <br>
+        <p><strong>Logging in:</strong> Click the <strong>Admin</strong> tab and enter the admin password. Ask your auction organizer for the password if you need access.</p>
+        <br>
+        <p><strong>Auction years:</strong> The app supports multiple auction years. Each year has its own completely separate set of data — donors, fish, bidders, sales, and purchases. The active year is shown in the header at the top of the app.</p>
+        <ul style="margin-left:20px;margin-top:8px;line-height:2;">
+          <li><strong>Switching years:</strong> Click any year pill to switch to that year. A confirmation popup will appear. Switching years updates the active year for all devices immediately.</li>
+          <li><strong>Creating a new year:</strong> Enter the year number and click <strong>Create new auction year</strong>. This creates a fresh empty dataset for that year and sets it as active.</li>
+        </ul>
+        <br>
+        <p><strong>Misc items price list:</strong> This is the list of items that appear in the Misc tab dropdown. You can add, edit, or delete items here to customize what is available for sale.</p>
+        <br>
+        <p><strong>Changing the admin password:</strong> Enter your current password, then your new password twice, and click <strong>Update password</strong>. The password must be at least 6 characters.</p>
+        <br>
+        <p><strong>Exporting data:</strong> You can export any section of the auction data as a formatted Excel file. The available exports are:</p>
+        <ul style="margin-left:20px;margin-top:8px;line-height:2;">
+          <li><strong>Export donors</strong> — list of all donors and their details</li>
+          <li><strong>Export fish</strong> — full fish catalog with sale status</li>
+          <li><strong>Export bidders</strong> — all registered bidders and payment status</li>
+          <li><strong>Export sales</strong> — every auction sale with fish and bidder details</li>
+          <li><strong>Export misc</strong> — all miscellaneous purchases</li>
+          <li><strong>⭐ Export donor payouts</strong> — the most important export. Shows every donor, each of their fish, the sale price, and exactly how much the club owes them based on their donor type.</li>
+        </ul>
+        <br>
+        <p style="background:#fdecea;padding:10px;border-radius:7px;font-size:13px;">🔒 <strong>Keep the admin password safe.</strong> Anyone with the password can switch years, change settings, and export all auction data.</p>
+      `
+    },
+    {
+      title: '❓ Troubleshooting — Common issues',
+      content: `
+        <p>Here are solutions to the most common issues you might encounter:</p>
+        <br>
+        <p><strong>"Fish not found" error in Scribe</strong><br>
+        Double check the fish ID you typed. It must be the tank letter followed immediately by the fish number with no spaces — for example <strong>A1</strong> not <strong>A 1</strong>. Also make sure the fish has been added in the Fish tab.</p>
+        <br>
+        <p><strong>"Bidder not found" error in Scribe or Misc</strong><br>
+        The bidder must be registered in the Bidders tab before their number can be used. Ask the registration table to add them first.</p>
+        <br>
+        <p><strong>"This fish has already been sold" error</strong><br>
+        That fish was already recorded as sold to another bidder. Check the sales log in the Scribe tab to see who bought it. If it was a mistake, delete that sale from the log and re-enter the correct one.</p>
+        <br>
+        <p><strong>"A fish with that number already exists in this tank" error</strong><br>
+        Each fish in a tank must have a unique number. Use the next available number for that tank.</p>
+        <br>
+        <p><strong>Cannot delete a donor</strong><br>
+        The donor has fish linked to them. Go to the Fish tab, delete or edit those fish to use a different donor, then try deleting the donor again.</p>
+        <br>
+        <p><strong>Cannot delete a bidder</strong><br>
+        The bidder has sales or misc purchases recorded. Go to the Scribe tab and delete their sales, and go to the Misc tab and delete their purchases, then try again.</p>
+        <br>
+        <p><strong>The totals look wrong in Checkout</strong><br>
+        Click the <strong>↻ Refresh</strong> button to reload the latest data from the database. Another device may have added purchases after you looked up the bidder.</p>
+        <br>
+        <p><strong>The app is showing the wrong year's data</strong><br>
+        Check the subtitle in the top bar — it shows which year is currently active. If it is wrong, go to the Admin tab, log in, and click the correct year pill to switch.</p>
+        <br>
+        <p><strong>Something else is wrong</strong><br>
+        Try refreshing the page in your browser. If the problem continues, check with the auction organizer who manages the app.</p>
+      `
+    }
+  ];
+
+  const accordion = document.getElementById('manual-accordion');
+  accordion.innerHTML = sections.map((s, i) => `
+    <div class="card" style="margin-bottom:8px;">
+      <div class="card-header" style="cursor:pointer;" onclick="toggleManualSection(${i})">
+        <div class="card-header-title" style="font-size:14px;">${s.title}</div>
+        <span id="manual-arrow-${i}" style="font-size:18px;color:#4db8d4;transition:transform 0.2s;">▼</span>
+      </div>
+      <div id="manual-section-${i}" style="display:none;">
+        <div class="card-body" style="font-size:13px;line-height:1.7;color:#222;">
+          ${s.content}
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function toggleManualSection(index) {
+  const section = document.getElementById(`manual-section-${index}`);
+  const arrow = document.getElementById(`manual-arrow-${index}`);
+  const isOpen = section.style.display !== 'none';
+  section.style.display = isOpen ? 'none' : 'block';
+  arrow.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(180deg)';
 }
 
 // ============================================
