@@ -280,11 +280,11 @@ body {
 .danger-zone h3 { color: #c0392b; font-size: 13px; margin-bottom: 10px; }
 
 /* Print styles */
+@page { margin: 1cm; }
 @media print {
   body > * { display: none !important; }
   #print-area { display: block !important; }
 }
-
 #print-area { display: none; }
 
 .receipt {
