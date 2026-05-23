@@ -25,13 +25,16 @@ async function loadSettings() {
     appSettings.activeYearId = active.id;
     document.getElementById('auction-subtitle').textContent = active.title;
   } else {
-    await sb.from('settings').insert({
+    const { data: newSettings } = await sb.from('settings').insert({
       year: appSettings.auctionYear,
       title: appSettings.auctionTitle,
       admin_password: 'admin1234',
       is_active: true,
-    });
-    document.getElementById('auction-subtitle').textContent = appSettings.auctionTitle;
+    }).select().single();
+    if (newSettings) {
+      appSettings.activeYearId = newSettings.id;
+      document.getElementById('auction-subtitle').textContent = appSettings.auctionTitle;
+    }
   }
 }
 
@@ -84,6 +87,7 @@ function attachPhoneFormatter(id) {
 // ============================================
 async function renderDashboard() {
   setContent('<p style="color:#4db8d4;padding:1rem;">Loading dashboard...</p>');
+  if (!appSettings.activeYearId) { setContent('<p style="color:#c0392b;padding:1rem;">No active year found. Please go to Admin to create one.</p>'); return; }
   const [{ count: fishCount }, { count: bidderCount }, { data: sales }, { data: misc }] = await Promise.all([
     sb.from('fish').select('*', { count: 'exact', head: true }).eq('year_id', appSettings.activeYearId),
     sb.from('bidders').select('*', { count: 'exact', head: true }).eq('year_id', appSettings.activeYearId),
@@ -148,7 +152,7 @@ async function renderDonors() {
                 <td><span class="badge badge-${d.type.toLowerCase()}">${d.type}</span></td>
                 <td>${d.num_fish}</td>
                 <td>
-                  <button class="btn btn-warning btn-xs" onclick="openEditDonorModal('${d.id}','${d.first_name}','${d.last_name}','${d.phone||''}','${d.email||''}','${d.type}',${d.num_fish})">Edit</button>
+                  <button class="btn btn-warning btn-xs" onclick='openEditDonorModal(${JSON.stringify(d)})'>Edit</button>
                   <button class="btn btn-danger btn-xs" onclick="deleteDonor('${d.id}')">Delete</button>
                 </td>
               </tr>
@@ -157,7 +161,6 @@ async function renderDonors() {
         </table>` : '<div class="empty-state">No donors yet. Add your first donor!</div>'}
       </div>
     </div>
-
     <div class="modal-overlay" id="donor-modal">
       <div class="modal">
         <div class="modal-title" id="donor-modal-title">Add donor</div>
@@ -198,15 +201,15 @@ function openDonorModal() {
   document.getElementById('donor-modal').classList.add('open');
 }
 
-function openEditDonorModal(id, first, last, phone, email, type, numFish) {
+function openEditDonorModal(d) {
   document.getElementById('donor-modal-title').textContent = 'Edit donor';
-  document.getElementById('d-id').value = id;
-  document.getElementById('d-first').value = first;
-  document.getElementById('d-last').value = last;
-  document.getElementById('d-phone').value = phone;
-  document.getElementById('d-email').value = email;
-  document.getElementById('d-type').value = type;
-  document.getElementById('d-fish').value = numFish;
+  document.getElementById('d-id').value = d.id;
+  document.getElementById('d-first').value = d.first_name;
+  document.getElementById('d-last').value = d.last_name;
+  document.getElementById('d-phone').value = d.phone || '';
+  document.getElementById('d-email').value = d.email || '';
+  document.getElementById('d-type').value = d.type;
+  document.getElementById('d-fish').value = d.num_fish;
   document.getElementById('donor-modal').classList.add('open');
 }
 
@@ -241,15 +244,23 @@ async function deleteDonor(id) {
 // FISH & TANKS
 // ============================================
 let activeTank = 'all';
+let allDonorsForFish = [];
 
 async function renderFish() {
   setContent('<p style="color:#4db8d4;padding:1rem;">Loading fish...</p>');
-  const { data: tanks } = await sb.from('tanks').select('*').eq('year_id', appSettings.activeYearId).order('letter');
-  const { data: fish } = await sb.from('fish').select('*, tanks(letter), donors(id, first_name, last_name, type), sales(sale_price)').eq('year_id', appSettings.activeYearId).order('fish_number');
-  const { data: donors } = await sb.from('donors').select('id, first_name, last_name, type').eq('year_id', appSettings.activeYearId).order('last_name');
+  const [{ data: tanks }, { data: fish }, { data: donors }] = await Promise.all([
+    sb.from('tanks').select('*').eq('year_id', appSettings.activeYearId).order('letter'),
+    sb.from('fish').select('*, tanks(letter), donors(id, first_name, last_name, type), sales(sale_price)').eq('year_id', appSettings.activeYearId).order('fish_number'),
+    sb.from('donors').select('id, first_name, last_name, type').eq('year_id', appSettings.activeYearId).order('last_name'),
+  ]);
 
+  allDonorsForFish = donors || [];
   const tankFish = (tankLetter) => fish ? fish.filter(f => f.tanks?.letter === tankLetter) : [];
   const allTanks = tanks || [];
+
+  const donorOptions = allDonorsForFish.map(d =>
+    `<option value="${d.id}" data-type="${d.type}">${d.first_name} ${d.last_name}</option>`
+  ).join('');
 
   const railHtml = `
     <div class="tank-rail">
@@ -266,7 +277,6 @@ async function renderFish() {
   `;
 
   const tanksToShow = activeTank === 'all' ? allTanks : allTanks.filter(t => t.letter === activeTank);
-  const donorOptions = (donors || []).map(d => `<option value="${d.id}" data-type="${d.type}">${d.first_name} ${d.last_name}</option>`).join('');
 
   const tanksHtml = tanksToShow.length === 0
     ? '<div class="card"><div class="card-body"><div class="empty-state">No tanks yet. Create your first tank!</div></div></div>'
@@ -275,7 +285,10 @@ async function renderFish() {
         return `
           <div class="card">
             <div class="card-header">
-              <div class="card-header-title">Tank ${tank.letter}${tank.description ? ' — ' + tank.description : ''} <span style="font-size:12px;color:#4db8d4;font-weight:normal;">${tf.length} fish</span></div>
+              <div class="card-header-title">
+                Tank ${tank.letter}${tank.description ? ' — ' + tank.description : ''}
+                <span style="font-size:12px;color:#4db8d4;font-weight:normal;margin-left:6px;">${tf.length} fish</span>
+              </div>
               <div style="display:flex;gap:6px;">
                 <button class="btn btn-primary btn-sm" onclick="openFishModal('${tank.id}','${tank.letter}')">+ Add fish</button>
                 <button class="btn btn-danger btn-xs" onclick="deleteTank('${tank.id}')">Delete tank</button>
@@ -297,7 +310,7 @@ async function renderFish() {
                             ? `<span class="badge badge-sold">Sold $${f.sales[0].sale_price}</span>`
                             : '<span class="badge badge-unsold">Available</span>'}</td>
                           <td>
-                            <button class="btn btn-warning btn-xs" onclick="openEditFishModal('${f.id}','${f.fish_number}','${f.description}','${f.donor_id||''}','${f.type||'Pickup'}')">Edit</button>
+                            <button class="btn btn-warning btn-xs" onclick='openEditFishModal(${JSON.stringify(f)}, "${tank.id}")'>Edit</button>
                             <button class="btn btn-danger btn-xs" onclick="deleteFish('${f.id}')">Delete</button>
                           </td>
                         </tr>
@@ -331,7 +344,7 @@ async function renderFish() {
 
     <div class="modal-overlay" id="fish-modal">
       <div class="modal">
-        <div class="modal-title" id="fish-modal-title">Add fish to Tank <span id="fish-modal-tank-label"></span></div>
+        <div class="modal-title" id="fish-modal-title">Add fish</div>
         <input type="hidden" id="fish-modal-tank-id" />
         <input type="hidden" id="f-id" />
         <div class="form-group"><label>Fish #</label><input id="f-num" type="number" min="1" /></div>
@@ -357,8 +370,9 @@ async function renderFish() {
 
 function autoFillFishType() {
   const select = document.getElementById('f-donor');
+  if (!select) return;
   const selectedOption = select.options[select.selectedIndex];
-  const donorType = selectedOption.dataset.type;
+  const donorType = selectedOption ? selectedOption.dataset.type : null;
   if (donorType) document.getElementById('f-type').value = donorType;
 }
 
@@ -368,30 +382,36 @@ function setActiveTank(letter) {
 }
 
 function openTankModal() {
+  document.getElementById('t-letter').value = '';
+  document.getElementById('t-desc').value = '';
   document.getElementById('tank-modal').classList.add('open');
 }
 
-async function openFishModal(tankId, tankLetter) {
+function openFishModal(tankId, tankLetter) {
   document.getElementById('fish-modal-title').textContent = 'Add fish to Tank ' + tankLetter;
   document.getElementById('fish-modal-tank-id').value = tankId;
-  document.getElementById('fish-modal-tank-label').textContent = tankLetter;
   document.getElementById('f-id').value = '';
   document.getElementById('f-num').value = '';
   document.getElementById('f-desc').value = '';
-  autoFillFishType();
+  const donorSelect = document.getElementById('f-donor');
+  if (donorSelect && donorSelect.options.length > 0) {
+    donorSelect.selectedIndex = 0;
+    autoFillFishType();
+  }
   document.getElementById('fish-modal').classList.add('open');
 }
 
-async function openEditFishModal(fishId, fishNum, fishDesc, donorId, fishType) {
+function openEditFishModal(f, tankId) {
   document.getElementById('fish-modal-title').textContent = 'Edit fish';
-  document.getElementById('f-id').value = fishId;
-  document.getElementById('f-num').value = fishNum;
-  document.getElementById('f-desc').value = fishDesc;
-  document.getElementById('f-type').value = fishType;
+  document.getElementById('fish-modal-tank-id').value = tankId;
+  document.getElementById('f-id').value = f.id;
+  document.getElementById('f-num').value = f.fish_number;
+  document.getElementById('f-desc').value = f.description;
+  document.getElementById('f-type').value = f.type || 'Pickup';
   const donorSelect = document.getElementById('f-donor');
-  if (donorId) {
+  if (donorSelect && f.donor_id) {
     for (let i = 0; i < donorSelect.options.length; i++) {
-      if (donorSelect.options[i].value === donorId) {
+      if (donorSelect.options[i].value === f.donor_id) {
         donorSelect.selectedIndex = i; break;
       }
     }
@@ -475,13 +495,11 @@ async function renderBidders() {
                 <td>${b.phone || '—'}</td>
                 <td><span class="badge ${b.is_member ? 'badge-member' : ''}">${b.is_member ? 'Yes' : 'No'}</span></td>
                 <td>${b.payment_method ? `<span class="badge badge-${b.payment_method === 'Cash' ? 'cash' : b.payment_method === 'Credit Card' ? 'cc' : 'check'}">${b.payment_method}</span>` : '—'}</td>
-                <td>
-                  ${b.is_paid
+                <td>${b.is_paid
                     ? `<span class="badge badge-paid">Paid $${Number(b.total_paid || 0).toFixed(2)}</span>`
-                    : '<span class="badge badge-unpaid">Unpaid</span>'}
-                </td>
+                    : '<span class="badge badge-unpaid">Unpaid</span>'}</td>
                 <td>
-                  <button class="btn btn-warning btn-xs" onclick="openEditBidderModal('${b.id}','${b.bidder_number}','${b.first_name}','${b.last_name}','${b.phone||''}','${b.email||''}',${b.is_member})">Edit</button>
+                  <button class="btn btn-warning btn-xs" onclick='openEditBidderModal(${JSON.stringify(b)})'>Edit</button>
                   <button class="btn btn-danger btn-xs" onclick="deleteBidder('${b.id}')">Delete</button>
                 </td>
               </tr>
@@ -530,15 +548,15 @@ function openBidderModal() {
   document.getElementById('bidder-modal').classList.add('open');
 }
 
-function openEditBidderModal(id, num, first, last, phone, email, isMember) {
+function openEditBidderModal(b) {
   document.getElementById('bidder-modal-title').textContent = 'Edit bidder';
-  document.getElementById('b-id').value = id;
-  document.getElementById('b-num').value = num;
-  document.getElementById('b-first').value = first;
-  document.getElementById('b-last').value = last;
-  document.getElementById('b-phone').value = phone;
-  document.getElementById('b-email').value = email;
-  document.getElementById('b-member').value = isMember ? 'true' : 'false';
+  document.getElementById('b-id').value = b.id;
+  document.getElementById('b-num').value = b.bidder_number;
+  document.getElementById('b-first').value = b.first_name;
+  document.getElementById('b-last').value = b.last_name;
+  document.getElementById('b-phone').value = b.phone || '';
+  document.getElementById('b-email').value = b.email || '';
+  document.getElementById('b-member').value = b.is_member ? 'true' : 'false';
   document.getElementById('bidder-modal').classList.add('open');
 }
 
@@ -659,7 +677,6 @@ async function loadCheckout() {
   const auctionTotal = (sales || []).reduce((s, r) => s + Number(r.sale_price), 0);
   const miscTotal = (misc || []).reduce((s, r) => s + Number(r.total_price), 0);
   const grandTotal = auctionTotal + miscTotal;
-
   document.getElementById('checkout-result').innerHTML = `
     <div class="card">
       <div class="card-header">
@@ -685,13 +702,7 @@ async function loadCheckout() {
         <table class="table">
           <thead><tr><th>Item</th><th>Qty</th><th style="text-align:right;">Total</th></tr></thead>
           <tbody>
-            ${misc.map(m => `
-              <tr>
-                <td>${m.item_name}</td>
-                <td>${m.quantity}</td>
-                <td style="text-align:right;">$${m.total_price}</td>
-              </tr>
-            `).join('')}
+            ${misc.map(m => `<tr><td>${m.item_name}</td><td>${m.quantity}</td><td style="text-align:right;">$${m.total_price}</td></tr>`).join('')}
           </tbody>
         </table>` : ''}
         <hr class="divider">
@@ -735,7 +746,6 @@ async function printReceipt(bidderId) {
   const auctionTotal = (sales || []).reduce((s, r) => s + Number(r.sale_price), 0);
   const miscTotal = (misc || []).reduce((s, r) => s + Number(r.total_price), 0);
   const grandTotal = auctionTotal + miscTotal;
-
   const printArea = document.getElementById('print-area');
   printArea.innerHTML = `
     <div class="receipt">
@@ -812,7 +822,7 @@ async function renderMisc() {
                 <td>${p.quantity}</td>
                 <td style="text-align:right;font-weight:bold;">$${p.total_price}</td>
                 <td>
-                  <button class="btn btn-warning btn-xs" onclick="openEditMiscModal('${p.id}','${p.item_name}',${p.quantity},${p.unit_price})">Edit</button>
+                  <button class="btn btn-warning btn-xs" onclick='openEditMiscModal(${JSON.stringify(p)})'>Edit</button>
                   <button class="btn btn-danger btn-xs" onclick="deleteMiscPurchase('${p.id}')">Delete</button>
                 </td>
               </tr>
@@ -821,7 +831,6 @@ async function renderMisc() {
         </table>` : '<div class="empty-state">No misc purchases yet.</div>'}
       </div>
     </div>
-
     <div class="modal-overlay" id="misc-edit-modal">
       <div class="modal">
         <div class="modal-title">Edit purchase</div>
@@ -838,11 +847,11 @@ async function renderMisc() {
   `);
 }
 
-function openEditMiscModal(id, name, qty, price) {
-  document.getElementById('me-id').value = id;
-  document.getElementById('me-name').value = name;
-  document.getElementById('me-qty').value = qty;
-  document.getElementById('me-price').value = price;
+function openEditMiscModal(p) {
+  document.getElementById('me-id').value = p.id;
+  document.getElementById('me-name').value = p.item_name;
+  document.getElementById('me-qty').value = p.quantity;
+  document.getElementById('me-price').value = p.unit_price;
   document.getElementById('misc-edit-modal').classList.add('open');
 }
 
@@ -928,7 +937,7 @@ async function renderAdminPanel() {
         <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px;">
           ${(years || []).map(y => `
             <div class="year-pill ${y.id === appSettings.activeYearId ? 'active' : ''}" onclick="switchYear('${y.id}')">
-              ${y.year} ${y.is_active ? '★' : ''}
+              ${y.year} ${y.id === appSettings.activeYearId ? '★ Active' : ''}
             </div>
           `).join('')}
         </div>
@@ -1017,19 +1026,19 @@ async function exportCSV(table) {
   let data, filename;
   if (table === 'donors') {
     const r = await sb.from('donors').select('*').eq('year_id', appSettings.activeYearId);
-    data = r.data; filename = 'donors.csv';
+    data = r.data; filename = `donors_${appSettings.auctionYear}.csv`;
   } else if (table === 'fish') {
     const r = await sb.from('fish').select('*, tanks(letter), donors(first_name,last_name)').eq('year_id', appSettings.activeYearId);
-    data = r.data; filename = 'fish.csv';
+    data = r.data; filename = `fish_${appSettings.auctionYear}.csv`;
   } else if (table === 'bidders') {
     const r = await sb.from('bidders').select('*').eq('year_id', appSettings.activeYearId);
-    data = r.data; filename = 'bidders.csv';
+    data = r.data; filename = `bidders_${appSettings.auctionYear}.csv`;
   } else if (table === 'sales') {
     const r = await sb.from('sales').select('*, fish(description,fish_number,tanks(letter)), bidders(first_name,last_name,bidder_number)').eq('year_id', appSettings.activeYearId);
-    data = r.data; filename = 'sales.csv';
+    data = r.data; filename = `sales_${appSettings.auctionYear}.csv`;
   } else if (table === 'misc_purchases') {
     const r = await sb.from('misc_purchases').select('*, bidders(first_name,last_name,bidder_number)').eq('year_id', appSettings.activeYearId);
-    data = r.data; filename = 'misc_purchases.csv';
+    data = r.data; filename = `misc_${appSettings.auctionYear}.csv`;
   }
   if (!data || data.length === 0) { alert('No data to export.'); return; }
   const keys = Object.keys(data[0]);
