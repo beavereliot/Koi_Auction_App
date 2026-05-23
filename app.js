@@ -1333,7 +1333,7 @@ async function saveMiscItem() {
     const { error } = await sb.from('misc_items').update({ name, unit_price, is_quantity_based }).eq('id', id);
     if (error) { alert('Error: ' + error.message); return; }
   } else {
-    const { error } = await sb.from('misc_items').insert({ name, unit_price, is_quantity_based });
+    const { error } = await sb.from('misc_items').insert({ name, unit_price, is_quantity_based, year_id: appSettings.activeYearId });
     if (error) { alert('Error: ' + error.message); return; }
   }
   closeModal('misc-item-modal');
