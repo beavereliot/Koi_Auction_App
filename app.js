@@ -924,6 +924,32 @@ function checkAdminPassword() {
 
 async function renderAdminPanel() {
   const { data: years } = await sb.from('settings').select('*').order('year', { ascending: false });
+  const { data: miscItems } = await sb.from('misc_items').select('*').order('name');
+
+  const yearsHtml = (years || []).map(y => {
+    const isActive = y.id === appSettings.activeYearId;
+    return `<div class="year-pill ${isActive ? 'active' : ''}" onclick="switchYear('${y.id}')">${y.year} ${isActive ? '★ Active' : ''}</div>`;
+  }).join('');
+
+  const miscItemsHtml = miscItems && miscItems.length > 0
+    ? `<table class="table">
+        <thead><tr><th>Item name</th><th>Unit price</th><th>Type</th><th>Actions</th></tr></thead>
+        <tbody>
+          ${miscItems.map(i => `
+            <tr>
+              <td>${i.name}</td>
+              <td>$${Number(i.unit_price).toFixed(2)}</td>
+              <td>${i.is_quantity_based ? 'Qty based' : 'Fixed'}</td>
+              <td>
+                <button class="btn btn-warning btn-xs" onclick='openEditMiscItemModal(${JSON.stringify(i)})'>Edit</button>
+                <button class="btn btn-danger btn-xs" onclick="deleteMiscItem('${i.id}')">Delete</button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>`
+    : '<div class="empty-state">No items yet.</div>';
+
   setContent(`
     <div class="page-header">
       <div class="section-label">Admin panel</div>
@@ -934,13 +960,7 @@ async function renderAdminPanel() {
       <div class="card-header"><div class="card-header-title">Auction years</div></div>
       <div class="card-body">
         <p style="font-size:13px;color:#666;margin-bottom:12px;">Select which year you are currently working on.</p>
-        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px;">
-          ${(years || []).map(y => `
-            <div class="year-pill ${y.id === appSettings.activeYearId ? 'active' : ''}" onclick="switchYear('${y.id}')">
-              ${y.year} ${y.id === appSettings.activeYearId ? '★ Active' : ''}
-            </div>
-          `).join('')}
-        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px;">${yearsHtml}</div>
         <hr class="divider">
         <p style="font-size:13px;font-weight:bold;color:#0d3d52;margin-bottom:10px;">Create new auction year</p>
         <div class="form-group"><label>Year</label><input id="new-year" type="number" value="${new Date().getFullYear() + 1}" /></div>
@@ -950,6 +970,14 @@ async function renderAdminPanel() {
           <button class="btn btn-danger btn-sm" onclick="createNewYear()">Create new auction year</button>
         </div>
       </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div class="card-header-title">Misc items price list</div>
+        <button class="btn btn-primary btn-sm" onclick="openMiscItemModal()">+ Add item</button>
+      </div>
+      <div class="card-body">${miscItemsHtml}</div>
     </div>
 
     <div class="card">
@@ -976,7 +1004,68 @@ async function renderAdminPanel() {
         </div>
       </div>
     </div>
+
+    <div class="modal-overlay" id="misc-item-modal">
+      <div class="modal">
+        <div class="modal-title" id="misc-item-modal-title">Add misc item</div>
+        <input type="hidden" id="mi-id" />
+        <div class="form-group"><label>Item name</label><input id="mi-name" type="text" placeholder="e.g. Gold-N Koi Food" /></div>
+        <div class="form-group"><label>Unit price ($)</label><input id="mi-price" type="number" step="0.01" placeholder="0.00" /></div>
+        <div class="form-group"><label>Type</label>
+          <select id="mi-qty">
+            <option value="true">Quantity based (price × qty)</option>
+            <option value="false">Fixed amount</option>
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-outline btn-sm" onclick="closeModal('misc-item-modal')">Cancel</button>
+          <button class="btn btn-primary btn-sm" onclick="saveMiscItem()">Save item</button>
+        </div>
+      </div>
+    </div>
   `);
+}
+
+function openMiscItemModal() {
+  document.getElementById('misc-item-modal-title').textContent = 'Add misc item';
+  document.getElementById('mi-id').value = '';
+  document.getElementById('mi-name').value = '';
+  document.getElementById('mi-price').value = '';
+  document.getElementById('mi-qty').value = 'true';
+  document.getElementById('misc-item-modal').classList.add('open');
+}
+
+function openEditMiscItemModal(i) {
+  document.getElementById('misc-item-modal-title').textContent = 'Edit misc item';
+  document.getElementById('mi-id').value = i.id;
+  document.getElementById('mi-name').value = i.name;
+  document.getElementById('mi-price').value = i.unit_price;
+  document.getElementById('mi-qty').value = i.is_quantity_based ? 'true' : 'false';
+  document.getElementById('misc-item-modal').classList.add('open');
+}
+
+async function saveMiscItem() {
+  const id = document.getElementById('mi-id').value;
+  const name = document.getElementById('mi-name').value.trim();
+  const unit_price = parseFloat(document.getElementById('mi-price').value);
+  const is_quantity_based = document.getElementById('mi-qty').value === 'true';
+  if (!name || isNaN(unit_price)) { alert('Please fill in item name and price.'); return; }
+  if (id) {
+    const { error } = await sb.from('misc_items').update({ name, unit_price, is_quantity_based }).eq('id', id);
+    if (error) { alert('Error: ' + error.message); return; }
+  } else {
+    const { error } = await sb.from('misc_items').insert({ name, unit_price, is_quantity_based });
+    if (error) { alert('Error: ' + error.message); return; }
+  }
+  closeModal('misc-item-modal');
+  renderAdminPanel();
+}
+
+async function deleteMiscItem(id) {
+  if (!window.confirm('Delete this item from the price list? This cannot be undone.')) return;
+  const { error } = await sb.from('misc_items').delete().eq('id', id);
+  if (error) { alert('Error: ' + error.message); return; }
+  renderAdminPanel();
 }
 
 async function switchYear(yearId) {
