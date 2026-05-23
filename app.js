@@ -959,7 +959,7 @@ async function printReceipt(bidderId) {
 async function renderMisc() {
   setContent('<p style="color:#4db8d4;padding:1rem;">Loading...</p>');
   const [{ data: items }, { data: purchases }] = await Promise.all([
-    sb.from('misc_items').select('*').order('name'),
+    sb.from('misc_items').select('*').eq('year_id', appSettings.activeYearId).order('name'),
     sb.from('misc_purchases').select('*, bidders(first_name, last_name, bidder_number)').eq('year_id', appSettings.activeYearId).order('created_at', { ascending: false }),
   ]);
   setContent(`
