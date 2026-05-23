@@ -130,6 +130,7 @@ body {
 .badge-cc { background: #e0f0fb; color: #1a4f7a; }
 .badge-check { background: #fef5e0; color: #7d5a0a; }
 .badge-member { background: #e8f4f8; color: #1a5f7a; }
+.badge-partial { background: #fef5e0; color: #854F0B; border: 1px solid #e8c44a; }
 
 /* Fish ID pill */
 .fish-id {

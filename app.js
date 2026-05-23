@@ -492,9 +492,30 @@ async function deleteTank(id) {
 // ============================================
 // BIDDERS
 // ============================================
+
 async function renderBidders() {
   setContent('<p style="color:#4db8d4;padding:1rem;">Loading bidders...</p>');
   const { data: bidders } = await sb.from('bidders').select('*').eq('year_id', appSettings.activeYearId).order('bidder_number');
+  const { data: allSales } = await sb.from('sales').select('bidder_id, sale_price').eq('year_id', appSettings.activeYearId);
+  const { data: allMisc } = await sb.from('misc_purchases').select('bidder_id, total_price').eq('year_id', appSettings.activeYearId);
+  const { data: allPayments } = await sb.from('payments').select('bidder_id, amount').eq('year_id', appSettings.activeYearId);
+
+  function getBidderTotals(bidderId) {
+    const sales = (allSales || []).filter(s => s.bidder_id === bidderId).reduce((s, r) => s + Number(r.sale_price), 0);
+    const misc = (allMisc || []).filter(m => m.bidder_id === bidderId).reduce((s, r) => s + Number(r.total_price), 0);
+    const paid = (allPayments || []).filter(p => p.bidder_id === bidderId).reduce((s, r) => s + Number(r.amount), 0);
+    const total = sales + misc;
+    const remaining = total - paid;
+    return { total, paid, remaining };
+  }
+
+  function getStatusBadge(bidder) {
+    const { total, paid, remaining } = getBidderTotals(bidder.id);
+    if (paid === 0) return '<span class="badge badge-unpaid">Unpaid</span>';
+    if (remaining > 0.01) return '<span class="badge badge-partial">Partially paid</span>';
+    return `<span class="badge badge-paid">Paid $${paid.toFixed(2)}</span>`;
+  }
+
   setContent(`
     <div class="page-header">
       <div class="section-label">Bidder registry</div>
@@ -504,7 +525,7 @@ async function renderBidders() {
       <div class="card-body">
         ${bidders && bidders.length > 0 ? `
         <table class="table">
-          <thead><tr><th>#</th><th>Name</th><th>Phone</th><th>Member</th><th>Payment</th><th>Status</th><th>Actions</th></tr></thead>
+          <thead><tr><th>#</th><th>Name</th><th>Phone</th><th>Member</th><th>Status</th><th>Actions</th></tr></thead>
           <tbody>
             ${bidders.map(b => `
               <tr>
@@ -512,10 +533,7 @@ async function renderBidders() {
                 <td>${b.first_name} ${b.last_name}</td>
                 <td>${b.phone || '—'}</td>
                 <td><span class="badge ${b.is_member ? 'badge-member' : ''}">${b.is_member ? 'Yes' : 'No'}</span></td>
-                <td>${b.payment_method ? `<span class="badge badge-${b.payment_method === 'Cash' ? 'cash' : b.payment_method === 'Credit Card' ? 'cc' : 'check'}">${b.payment_method}</span>` : '—'}</td>
-                <td>${b.is_paid
-                    ? `<span class="badge badge-paid">Paid $${Number(b.total_paid || 0).toFixed(2)}</span>`
-                    : '<span class="badge badge-unpaid">Unpaid</span>'}</td>
+                <td>${getStatusBadge(b)}</td>
                 <td>
                   <button class="btn btn-warning btn-xs" onclick='openEditBidderModal(${JSON.stringify(b)})'>Edit</button>
                   <button class="btn btn-danger btn-xs" onclick="deleteBidder('${b.id}')">Delete</button>
@@ -728,16 +746,31 @@ async function loadCheckout() {
   if (!bidderNum) { alert('Please enter a bidder number.'); return; }
   const { data: bidder } = await sb.from('bidders').select('*').eq('bidder_number', bidderNum).eq('year_id', appSettings.activeYearId).single();
   if (!bidder) { document.getElementById('checkout-result').innerHTML = '<div class="alert alert-error">Bidder not found.</div>'; return; }
+
   const { data: sales } = await sb.from('sales').select('sale_price, fish(description, fish_number, tanks(letter))').eq('bidder_id', bidder.id);
   const { data: misc } = await sb.from('misc_purchases').select('*').eq('bidder_id', bidder.id);
+  const { data: payments } = await sb.from('payments').select('*').eq('bidder_id', bidder.id).order('created_at');
+
   const auctionTotal = (sales || []).reduce((s, r) => s + Number(r.sale_price), 0);
   const miscTotal = (misc || []).reduce((s, r) => s + Number(r.total_price), 0);
   const grandTotal = auctionTotal + miscTotal;
+  const totalPaid = (payments || []).reduce((s, r) => s + Number(r.amount), 0);
+  const remaining = grandTotal - totalPaid;
+
+  const isPaid = totalPaid >= grandTotal - 0.01;
+  const isPartial = totalPaid > 0 && !isPaid;
+
+  const statusBadge = isPaid
+    ? '<span class="badge badge-paid">Paid in full</span>'
+    : isPartial
+    ? '<span class="badge badge-partial">Partially paid</span>'
+    : '<span class="badge badge-unpaid">Unpaid</span>';
+
   document.getElementById('checkout-result').innerHTML = `
     <div class="card">
       <div class="card-header">
         <div class="card-header-title">${bidder.first_name} ${bidder.last_name} — Bidder #${bidder.bidder_number}</div>
-        <span class="badge ${bidder.is_paid ? 'badge-paid' : 'badge-unpaid'}">${bidder.is_paid ? 'Paid' : 'Unpaid'}</span>
+        ${statusBadge}
       </div>
       <div class="card-body">
         ${sales && sales.length > 0 ? `
@@ -753,6 +786,7 @@ async function loadCheckout() {
             `).join('')}
           </tbody>
         </table>` : '<p style="color:#888;font-size:13px;margin-bottom:8px;">No auction fish.</p>'}
+
         ${misc && misc.length > 0 ? `
         <hr class="divider">
         <table class="table">
@@ -761,18 +795,37 @@ async function loadCheckout() {
             ${misc.map(m => `<tr><td>${m.item_name}</td><td>${m.quantity}</td><td style="text-align:right;">$${m.total_price}</td></tr>`).join('')}
           </tbody>
         </table>` : ''}
+
         <hr class="divider">
         <div class="total-row"><span>Auction fish</span><span>$${auctionTotal.toFixed(2)}</span></div>
         <div class="total-row"><span>Misc purchases</span><span>$${miscTotal.toFixed(2)}</span></div>
-        <div class="total-row grand"><span>Total due</span><span class="amount">$${grandTotal.toFixed(2)}</span></div>
+        <div class="total-row grand"><span>Grand total</span><span class="amount">$${grandTotal.toFixed(2)}</span></div>
+
+        ${payments && payments.length > 0 ? `
         <hr class="divider">
-        ${bidder.is_paid ? `
-          <div class="alert alert-success">This bidder has already been marked as paid — $${Number(bidder.total_paid || 0).toFixed(2)} via ${bidder.payment_method || '—'}.</div>
+        <p style="font-size:12px;font-weight:bold;color:#1a5f7a;margin-bottom:6px;">Payment history</p>
+        ${payments.map(p => `
+          <div class="total-row">
+            <span style="font-size:13px;">✓ ${p.payment_method}${p.payment_reference ? ' (' + p.payment_reference + ')' : ''} — ${p.created_at ? new Date(p.created_at).toLocaleDateString() : ''}</span>
+            <span style="color:#0a6640;font-weight:bold;">$${Number(p.amount).toFixed(2)}</span>
+          </div>
+        `).join('')}
+        <div class="total-row" style="margin-top:6px;">
+          <span style="font-weight:bold;">Remaining balance</span>
+          <span style="font-weight:bold;color:${remaining > 0.01 ? '#c0392b' : '#0a6640'};">$${Math.max(0, remaining).toFixed(2)}</span>
+        </div>` : ''}
+
+        <hr class="divider">
+        ${isPaid ? `
+          <div class="alert alert-success">Paid in full — $${totalPaid.toFixed(2)}</div>
           <div style="display:flex;gap:8px;margin-top:8px;">
             <button class="btn btn-outline" style="flex:1;justify-content:center;" onclick="loadCheckout()">↻ Refresh</button>
             <button class="btn btn-outline" style="flex:1;justify-content:center;" onclick="printReceipt('${bidder.id}')">🖨️ Print receipt</button>
           </div>
         ` : `
+        <div class="form-group"><label>${isPartial ? 'Remaining balance' : 'Total due'}</label>
+          <input type="number" value="${Math.max(0, remaining).toFixed(2)}" id="co-amount" step="0.01" min="0.01" />
+        </div>
         <div class="form-group"><label>Payment method</label>
           <select id="co-payment">
             <option value="Cash">Cash</option>
@@ -781,10 +834,10 @@ async function loadCheckout() {
           </select>
         </div>
         <div class="form-group"><label>Check # or last 4 of card</label>
-          <input id="co-ref" type="text" placeholder="Optional reference" value="${bidder.payment_reference || ''}" />
+          <input id="co-ref" type="text" placeholder="Optional reference" />
         </div>
         <div style="display:flex;gap:8px;margin-top:8px;">
-          <button class="btn btn-primary" style="flex:1;justify-content:center;" onclick="markPaid('${bidder.id}',${grandTotal})">✓ Mark as paid</button>
+          <button class="btn btn-primary" style="flex:1;justify-content:center;" onclick="recordPayment('${bidder.id}',${grandTotal})">✓ Record payment</button>
           <button class="btn btn-outline" style="flex:1;justify-content:center;" onclick="loadCheckout()">↻ Refresh</button>
           <button class="btn btn-outline" style="flex:1;justify-content:center;" onclick="printReceipt('${bidder.id}')">🖨️ Print receipt</button>
         </div>`}
@@ -794,12 +847,35 @@ async function loadCheckout() {
   `;
 }
 
-async function markPaid(bidderId, totalPaid) {
+async function recordPayment(bidderId, grandTotal) {
+  const amount = parseFloat(document.getElementById('co-amount').value);
   const payment_method = document.getElementById('co-payment').value;
   const payment_reference = document.getElementById('co-ref').value.trim();
-  const { error } = await sb.from('bidders').update({ is_paid: true, payment_method, payment_reference, total_paid: totalPaid }).eq('id', bidderId);
-  if (error) { document.getElementById('checkout-msg').innerHTML = '<div class="alert alert-error">Error: ' + error.message + '</div>'; return; }
-  document.getElementById('checkout-msg').innerHTML = '<div class="alert alert-success">Payment recorded!</div>';
+  const msg = document.getElementById('checkout-msg');
+
+  if (!amount || amount <= 0) { msg.innerHTML = '<div class="alert alert-error">Please enter a valid payment amount.</div>'; return; }
+
+  const { error: paymentError } = await sb.from('payments').insert({
+    bidder_id: bidderId,
+    amount,
+    payment_method,
+    payment_reference,
+    year_id: appSettings.activeYearId,
+  });
+  if (paymentError) { msg.innerHTML = '<div class="alert alert-error">Error: ' + paymentError.message + '</div>'; return; }
+
+  const { data: allPayments } = await sb.from('payments').select('amount').eq('bidder_id', bidderId);
+  const totalPaid = (allPayments || []).reduce((s, r) => s + Number(r.amount), 0);
+  const isPaid = totalPaid >= grandTotal - 0.01;
+
+  await sb.from('bidders').update({
+    is_paid: isPaid,
+    payment_method,
+    payment_reference,
+    total_paid: totalPaid,
+  }).eq('id', bidderId);
+
+  msg.innerHTML = '<div class="alert alert-success">Payment recorded!</div>';
   setTimeout(() => loadCheckout(), 1000);
 }
 
@@ -807,9 +883,14 @@ async function printReceipt(bidderId) {
   const { data: bidder } = await sb.from('bidders').select('*').eq('id', bidderId).single();
   const { data: sales } = await sb.from('sales').select('sale_price, fish(description, fish_number, tanks(letter))').eq('bidder_id', bidderId);
   const { data: misc } = await sb.from('misc_purchases').select('*').eq('bidder_id', bidderId);
+  const { data: payments } = await sb.from('payments').select('*').eq('bidder_id', bidderId).order('created_at');
+
   const auctionTotal = (sales || []).reduce((s, r) => s + Number(r.sale_price), 0);
   const miscTotal = (misc || []).reduce((s, r) => s + Number(r.total_price), 0);
   const grandTotal = auctionTotal + miscTotal;
+  const totalPaid = (payments || []).reduce((s, r) => s + Number(r.amount), 0);
+  const remaining = grandTotal - totalPaid;
+
   const printArea = document.getElementById('print-area');
   printArea.innerHTML = `
     <div class="receipt">
@@ -819,7 +900,9 @@ async function printReceipt(bidderId) {
         <p>${appSettings.auctionTitle}</p>
         <p>Bidder #${bidder.bidder_number} — ${bidder.first_name} ${bidder.last_name}</p>
       </div>
+
       ${sales && sales.length > 0 ? `
+      <p style="font-weight:bold;font-size:13px;margin:12px 0 6px;">Auction fish</p>
       <table class="receipt-table">
         <thead><tr><th>Fish</th><th>Description</th><th style="text-align:right;">Price</th></tr></thead>
         <tbody>
@@ -832,21 +915,43 @@ async function printReceipt(bidderId) {
           `).join('')}
         </tbody>
       </table>` : ''}
+
       ${misc && misc.length > 0 ? `
+      <p style="font-weight:bold;font-size:13px;margin:12px 0 6px;">Misc purchases</p>
       <table class="receipt-table">
         <thead><tr><th>Item</th><th>Qty</th><th style="text-align:right;">Total</th></tr></thead>
         <tbody>
           ${misc.map(m => `<tr><td>${m.item_name}</td><td>${m.quantity}</td><td style="text-align:right;">$${m.total_price}</td></tr>`).join('')}
         </tbody>
       </table>` : ''}
-      <div class="receipt-total">Total: $${grandTotal.toFixed(2)}</div>
-      <div style="margin-top:8px;font-size:13px;">Payment: ${bidder.payment_method || '—'} ${bidder.payment_reference ? '(' + bidder.payment_reference + ')' : ''}</div>
+
+      <div class="receipt-total">Grand total: $${grandTotal.toFixed(2)}</div>
+
+      ${payments && payments.length > 0 ? `
+      <p style="font-weight:bold;font-size:13px;margin:12px 0 6px;">Payment history</p>
+      <table class="receipt-table">
+        <thead><tr><th>Method</th><th>Reference</th><th>Date</th><th style="text-align:right;">Amount</th></tr></thead>
+        <tbody>
+          ${payments.map(p => `
+            <tr>
+              <td>${p.payment_method || '—'}</td>
+              <td>${p.payment_reference || '—'}</td>
+              <td>${p.created_at ? new Date(p.created_at).toLocaleDateString() : ''}</td>
+              <td style="text-align:right;">$${Number(p.amount).toFixed(2)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+      <div style="text-align:right;font-size:13px;margin-top:6px;">
+        Total paid: $${totalPaid.toFixed(2)}<br/>
+        ${remaining > 0.01 ? `<strong style="color:#c0392b;">Remaining: $${remaining.toFixed(2)}</strong>` : '<strong style="color:#0a6640;">Paid in full</strong>'}
+      </div>` : ''}
+
       <div class="receipt-footer">Thank you for supporting the Pikes Peak Koi & Water Garden Society!</div>
     </div>
   `;
   window.print();
 }
-
 // ============================================
 // MISC PURCHASES
 // ============================================
