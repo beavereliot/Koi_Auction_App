@@ -1143,14 +1143,19 @@ async function switchYear(yearId) {
   }
   const { data } = await sb.from('settings').select('*').eq('id', yearId).single();
   if (!data) return;
-  const confirmed = window.confirm(`Switch to the ${data.year} auction year?`);
+  const confirmed = window.confirm(`Switch to the ${data.year} auction year? This will update for all devices.`);
   if (!confirmed) return;
+
+  await sb.from('settings').update({ is_active: false }).neq('id', yearId);
+  await sb.from('settings').update({ is_active: true }).eq('id', yearId);
+
   appSettings.activeYearId = data.id;
   appSettings.auctionYear = data.year;
   appSettings.auctionTitle = data.title;
   appSettings.adminPassword = data.admin_password || 'admin1234';
   document.getElementById('auction-subtitle').textContent = data.title;
-  const activePage = document.querySelector('.nav-item.active')?.dataset?.page || 'dashboard';
+
+  const activePage = getActivePage();
   loadPage(activePage);
   renderAdminPanel();
 }
@@ -1572,11 +1577,52 @@ function closeModal(id) {
 }
 
 // ============================================
+
+// ============================================
+// AUTO REFRESH
+// ============================================
+let refreshInterval = null;
+
+function isModalOpen() {
+  return document.querySelector('.modal-overlay.open') !== null;
+}
+
+function getActivePage() {
+  return document.querySelector('.nav-item.active')?.dataset?.page || 'dashboard';
+}
+
+async function silentRefresh() {
+  if (isModalOpen()) return;
+  const page = getActivePage();
+  switch(page) {
+    case 'dashboard': await renderDashboard(); break;
+    case 'donors':    await renderDonors();    break;
+    case 'fish':      await renderFish();      break;
+    case 'bidders':   await renderBidders();   break;
+    case 'scribe':    await renderScribe();    break;
+    case 'misc':      await renderMisc();      break;
+  }
+}
+
+function startAutoRefresh() {
+  if (refreshInterval) clearInterval(refreshInterval);
+  refreshInterval = setInterval(silentRefresh, 30000);
+}
+
+// ============================================
+// UTILITIES
+// ============================================
+function closeModal(id) {
+  document.getElementById(id).classList.remove('open');
+}
+
+// ============================================
 // INIT
 // ============================================
 async function init() {
   await loadSettings();
   renderDashboard();
+  startAutoRefresh();
 }
 
 init();
