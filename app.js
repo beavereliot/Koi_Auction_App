@@ -174,10 +174,7 @@ async function renderDonors() {
         <div class="form-group"><label>Phone</label><input id="d-phone" type="text" placeholder="xxx-xxx-xxxx" /></div>
         <div class="form-group"><label>Email</label><input id="d-email" type="email" /></div>
         <div class="form-group"><label>Type</label>
-          <select id="d-type">
-            <option value="Pickup">Pickup (40%)</option>
-            <option value="Dropoff">Dropoff (50%)</option>
-            <option value="Donation">Donation (0%)</option>
+          <select id="d-type" id="d-type">
           </select>
         </div>
         <div class="form-group"><label># of fish</label><input id="d-fish" type="number" value="1" min="0" /></div>
@@ -191,28 +188,29 @@ async function renderDonors() {
   attachPhoneFormatter('d-phone');
 }
 
-function openDonorModal() {
+async function openDonorModal() {
   document.getElementById('donor-modal-title').textContent = 'Add donor';
   document.getElementById('d-id').value = '';
   document.getElementById('d-first').value = '';
   document.getElementById('d-last').value = '';
   document.getElementById('d-phone').value = '';
   document.getElementById('d-email').value = '';
-  document.getElementById('d-type').value = 'Pickup';
   document.getElementById('d-fish').value = '1';
   document.getElementById('donor-modal').classList.add('open');
+  await populateDonorTypeSelects();
 }
 
-function openEditDonorModal(d) {
+async function openEditDonorModal(d) {
   document.getElementById('donor-modal-title').textContent = 'Edit donor';
   document.getElementById('d-id').value = d.id;
   document.getElementById('d-first').value = d.first_name;
   document.getElementById('d-last').value = d.last_name;
   document.getElementById('d-phone').value = d.phone || '';
   document.getElementById('d-email').value = d.email || '';
-  document.getElementById('d-type').value = d.type;
   document.getElementById('d-fish').value = d.num_fish;
   document.getElementById('donor-modal').classList.add('open');
+  await populateDonorTypeSelects();
+  document.getElementById('d-type').value = d.type;
 }
 
 async function saveDonor() {
@@ -363,9 +361,6 @@ async function renderFish() {
         </div>
         <div class="form-group"><label>Type</label>
           <select id="f-type">
-            <option value="Pickup">Pickup (40%)</option>
-            <option value="Dropoff">Dropoff (50%)</option>
-            <option value="Donation">Donation (0%)</option>
           </select>
         </div>
         <div class="modal-actions">
@@ -378,11 +373,12 @@ async function renderFish() {
 }
 
 function autoFillFishType() {
-  const select = document.getElementById('f-donor');
-  if (!select) return;
-  const selectedOption = select.options[select.selectedIndex];
+  const donorSelect = document.getElementById('f-donor');
+  if (!donorSelect) return;
+  const selectedOption = donorSelect.options[donorSelect.selectedIndex];
   const donorType = selectedOption ? selectedOption.dataset.type : null;
-  if (donorType) document.getElementById('f-type').value = donorType;
+  const fType = document.getElementById('f-type');
+  if (donorType && fType) fType.value = donorType;
 }
 
 function setActiveTank(letter) {
@@ -396,7 +392,7 @@ function openTankModal() {
   document.getElementById('tank-modal').classList.add('open');
 }
 
-function openFishModal(tankId, tankLetter) {
+async function openFishModal(tankId, tankLetter) {
   if (allDonorsForFish.length === 0) {
     alert('Please add at least one donor before adding fish.');
     return;
@@ -406,21 +402,24 @@ function openFishModal(tankId, tankLetter) {
   document.getElementById('f-id').value = '';
   document.getElementById('f-num').value = '';
   document.getElementById('f-desc').value = '';
+  document.getElementById('fish-modal').classList.add('open');
+  await populateDonorTypeSelects();
   const donorSelect = document.getElementById('f-donor');
   if (donorSelect && donorSelect.options.length > 0) {
     donorSelect.selectedIndex = 0;
     autoFillFishType();
   }
-  document.getElementById('fish-modal').classList.add('open');
 }
 
-function openEditFishModal(f, tankId) {
+async function openEditFishModal(f, tankId) {
   document.getElementById('fish-modal-title').textContent = 'Edit fish';
   document.getElementById('fish-modal-tank-id').value = tankId;
   document.getElementById('f-id').value = f.id;
   document.getElementById('f-num').value = f.fish_number;
   document.getElementById('f-desc').value = f.description;
-  document.getElementById('f-type').value = f.type || 'Pickup';
+  document.getElementById('fish-modal').classList.add('open');
+  await populateDonorTypeSelects();
+  document.getElementById('f-type').value = f.type || '';
   const donorSelect = document.getElementById('f-donor');
   if (donorSelect && f.donor_id) {
     for (let i = 0; i < donorSelect.options.length; i++) {
@@ -429,7 +428,6 @@ function openEditFishModal(f, tankId) {
       }
     }
   }
-  document.getElementById('fish-modal').classList.add('open');
 }
 
 async function saveTank() {
@@ -450,8 +448,11 @@ async function saveFish() {
   const description = document.getElementById('f-desc').value.trim();
   const donor_id = document.getElementById('f-donor').value;
   const type = document.getElementById('f-type').value;
-  const donor_percent = type === 'Pickup' ? 0.4 : type === 'Dropoff' ? 0.5 : 0;
   if (!fish_number || fish_number < 1 || !description) { alert('Please fill in a valid fish # and description.'); return; }
+
+  const { data: dtData } = await sb.from('donor_types').select('percentage').eq('name', type).eq('year_id', appSettings.activeYearId).single();
+  const donor_percent = dtData ? Number(dtData.percentage) : 0;
+
   if (id) {
     const { error } = await sb.from('fish').update({ fish_number, description, donor_id, type, donor_percent }).eq('id', id);
     if (error) {
@@ -468,7 +469,6 @@ async function saveFish() {
   closeModal('fish-modal');
   renderFish();
 }
-
 async function deleteFish(id) {
   if (!window.confirm('Delete this fish? This cannot be undone.')) return;
   await sb.from('sales').delete().eq('fish_id', id);
@@ -1097,7 +1097,8 @@ function checkAdminPassword() {
 
 async function renderAdminPanel() {
   const { data: years } = await sb.from('settings').select('*').order('year', { ascending: false });
-  const { data: miscItems } = await sb.from('misc_items').select('*').order('name');
+  const { data: miscItems } = await sb.from('misc_items').select('*').eq('year_id', appSettings.activeYearId).order('name');
+  const { data: donorTypes } = await sb.from('donor_types').select('*').eq('year_id', appSettings.activeYearId).order('name');
 
   const yearsHtml = (years || []).map(y => {
     const isActive = y.id === appSettings.activeYearId;
@@ -1121,7 +1122,25 @@ async function renderAdminPanel() {
           `).join('')}
         </tbody>
       </table>`
-    : '<div class="empty-state">No items yet.</div>';
+    : '<div class="empty-state">No items yet. Add your first item.</div>';
+
+  const donorTypesHtml = donorTypes && donorTypes.length > 0
+    ? `<table class="table">
+        <thead><tr><th>Type name</th><th>Payout %</th><th>Actions</th></tr></thead>
+        <tbody>
+          ${donorTypes.map(dt => `
+            <tr>
+              <td>${dt.name}</td>
+              <td>${(Number(dt.percentage) * 100).toFixed(0)}%</td>
+              <td>
+                <button class="btn btn-warning btn-xs" onclick='openEditDonorTypeModal(${JSON.stringify(dt)})'>Edit</button>
+                <button class="btn btn-danger btn-xs" onclick="deleteDonorType('${dt.id}')">Delete</button>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>`
+    : '<div class="empty-state">No donor types yet.</div>';
 
   setContent(`
     <div class="page-header">
@@ -1139,9 +1158,20 @@ async function renderAdminPanel() {
         <div class="form-group"><label>Year</label><input id="new-year" type="number" value="${new Date().getFullYear() + 1}" /></div>
         <div class="danger-zone">
           <h3>⚠️ Warning</h3>
-          <p style="font-size:12px;color:#666;margin-bottom:10px;">Creating a new year will set it as the active year. All existing data stays saved and accessible by switching years above.</p>
+          <p style="font-size:12px;color:#666;margin-bottom:10px;">Creating a new year will set it as the active year. All existing data stays saved. Misc items and donor types will be copied from the current year.</p>
           <button class="btn btn-danger btn-sm" onclick="createNewYear()">Create new auction year</button>
         </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div class="card-header-title">Donor types & payout percentages</div>
+        <button class="btn btn-primary btn-sm" onclick="openDonorTypeModal()">+ Add type</button>
+      </div>
+      <div class="card-body">
+        <p style="font-size:12px;color:#666;margin-bottom:10px;">These types appear when adding donors and fish. Changing a percentage will update all existing fish of that type in the current year.</p>
+        ${donorTypesHtml}
       </div>
     </div>
 
@@ -1167,14 +1197,27 @@ async function renderAdminPanel() {
     <div class="card">
       <div class="card-header"><div class="card-header-title">Export data</div></div>
       <div class="card-body">
-        <p style="font-size:13px;color:#666;margin-bottom:12px;">Export current year data as CSV files.</p>
+        <p style="font-size:13px;color:#666;margin-bottom:12px;">Export current year data as formatted Excel files.</p>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            <button class="btn btn-outline btn-sm" onclick="exportCSV('donors')">Export donors</button>
-            <button class="btn btn-outline btn-sm" onclick="exportCSV('fish')">Export fish</button>
-            <button class="btn btn-outline btn-sm" onclick="exportCSV('bidders')">Export bidders</button>
-            <button class="btn btn-outline btn-sm" onclick="exportCSV('sales')">Export sales</button>
-            <button class="btn btn-outline btn-sm" onclick="exportCSV('misc_purchases')">Export misc</button>
-            <button class="btn btn-primary btn-sm" onclick="exportCSV('donor_payouts')">⭐ Export donor payouts</button>
+          <button class="btn btn-outline btn-sm" onclick="exportCSV('donors')">Export donors</button>
+          <button class="btn btn-outline btn-sm" onclick="exportCSV('fish')">Export fish</button>
+          <button class="btn btn-outline btn-sm" onclick="exportCSV('bidders')">Export bidders</button>
+          <button class="btn btn-outline btn-sm" onclick="exportCSV('sales')">Export sales</button>
+          <button class="btn btn-outline btn-sm" onclick="exportCSV('misc_purchases')">Export misc</button>
+          <button class="btn btn-primary btn-sm" onclick="exportCSV('donor_payouts')">⭐ Export donor payouts</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-overlay" id="donor-type-modal">
+      <div class="modal">
+        <div class="modal-title" id="donor-type-modal-title">Add donor type</div>
+        <input type="hidden" id="dt-id" />
+        <div class="form-group"><label>Type name</label><input id="dt-name" type="text" placeholder="e.g. Pickup, Dropoff, Donation" /></div>
+        <div class="form-group"><label>Payout percentage (%)</label><input id="dt-percent" type="number" min="0" max="100" step="1" placeholder="e.g. 40 for 40%" /></div>
+        <div class="modal-actions">
+          <button class="btn btn-outline btn-sm" onclick="closeModal('donor-type-modal')">Cancel</button>
+          <button class="btn btn-primary btn-sm" onclick="saveDonorType()">Save type</button>
         </div>
       </div>
     </div>
@@ -1198,6 +1241,68 @@ async function renderAdminPanel() {
       </div>
     </div>
   `);
+}
+
+function openDonorTypeModal() {
+  document.getElementById('donor-type-modal-title').textContent = 'Add donor type';
+  document.getElementById('dt-id').value = '';
+  document.getElementById('dt-name').value = '';
+  document.getElementById('dt-percent').value = '';
+  document.getElementById('donor-type-modal').classList.add('open');
+}
+
+function openEditDonorTypeModal(dt) {
+  document.getElementById('donor-type-modal-title').textContent = 'Edit donor type';
+  document.getElementById('dt-id').value = dt.id;
+  document.getElementById('dt-name').value = dt.name;
+  document.getElementById('dt-percent').value = (Number(dt.percentage) * 100).toFixed(0);
+  document.getElementById('donor-type-modal').classList.add('open');
+}
+
+async function saveDonorType() {
+  const id = document.getElementById('dt-id').value;
+  const name = document.getElementById('dt-name').value.trim();
+  const percentInput = parseFloat(document.getElementById('dt-percent').value);
+  if (!name || isNaN(percentInput)) { alert('Please fill in type name and percentage.'); return; }
+  if (percentInput < 0 || percentInput > 100) { alert('Percentage must be between 0 and 100.'); return; }
+  const percentage = percentInput / 100;
+
+  if (id) {
+    const { error } = await sb.from('donor_types').update({ name, percentage }).eq('id', id);
+    if (error) { alert('Error: ' + error.message); return; }
+    const { data: linkedFish } = await sb.from('fish').select('id').eq('year_id', appSettings.activeYearId).eq('type', name);
+    if (linkedFish && linkedFish.length > 0) {
+      for (const f of linkedFish) {
+        await sb.from('fish').update({ donor_percent: percentage }).eq('id', f.id);
+      }
+    }
+    const { data: linkedDonors } = await sb.from('donors').select('id').eq('year_id', appSettings.activeYearId).eq('type', name);
+    if (linkedDonors && linkedDonors.length > 0) {
+      for (const d of linkedDonors) {
+        await sb.from('donors').update({ type: name }).eq('id', d.id);
+      }
+    }
+  } else {
+    const { error } = await sb.from('donor_types').insert({ name, percentage, year_id: appSettings.activeYearId });
+    if (error) { alert('Error: ' + error.message); return; }
+  }
+  closeModal('donor-type-modal');
+  renderAdminPanel();
+}
+
+async function deleteDonorType(id) {
+  const { data: dt } = await sb.from('donor_types').select('name').eq('id', id).single();
+  const { data: linkedFish } = await sb.from('fish').select('id').eq('year_id', appSettings.activeYearId).eq('type', dt?.name);
+  const { data: linkedDonors } = await sb.from('donors').select('id').eq('year_id', appSettings.activeYearId).eq('type', dt?.name);
+  const totalLinked = (linkedFish?.length || 0) + (linkedDonors?.length || 0);
+  if (totalLinked > 0) {
+    alert(`Cannot delete "${dt?.name}" — it is used by ${linkedDonors?.length || 0} donor(s) and ${linkedFish?.length || 0} fish. Please reassign them first.`);
+    return;
+  }
+  if (!window.confirm(`Delete the "${dt?.name}" donor type? This cannot be undone.`)) return;
+  const { error } = await sb.from('donor_types').delete().eq('id', id);
+  if (error) { alert('Error: ' + error.message); return; }
+  renderAdminPanel();
 }
 
 function openMiscItemModal() {
@@ -1271,16 +1376,38 @@ async function createNewYear() {
   if (!year) { alert('Please enter a valid year.'); return; }
   if (!window.confirm(`Create a new auction year for ${year}? This will become the active year.`)) return;
   const title = `${year} Re-Homing Auction`;
+
   const { data, error } = await sb.from('settings').insert({
     year, title, admin_password: appSettings.adminPassword, is_active: true
   }).select().single();
   if (error) { alert('Error: ' + error.message); return; }
+
   await sb.from('settings').update({ is_active: false }).neq('id', data.id);
+
+  const { data: prevMiscItems } = await sb.from('misc_items').select('*').eq('year_id', appSettings.activeYearId);
+  for (const item of (prevMiscItems || [])) {
+    await sb.from('misc_items').insert({
+      name: item.name,
+      unit_price: item.unit_price,
+      is_quantity_based: item.is_quantity_based,
+      year_id: data.id,
+    });
+  }
+
+  const { data: prevDonorTypes } = await sb.from('donor_types').select('*').eq('year_id', appSettings.activeYearId);
+  for (const dt of (prevDonorTypes || [])) {
+    await sb.from('donor_types').insert({
+      name: dt.name,
+      percentage: dt.percentage,
+      year_id: data.id,
+    });
+  }
+
   appSettings.activeYearId = data.id;
   appSettings.auctionYear = data.year;
   appSettings.auctionTitle = data.title;
   document.getElementById('auction-subtitle').textContent = data.title;
-  alert(`${year} auction year created and set as active!`);
+  alert(`${year} auction year created! Misc items and donor types copied from previous year.`);
   renderAdminPanel();
 }
 
@@ -1680,6 +1807,18 @@ async function exportCSV(table) {
 // ============================================
 function closeModal(id) {
   document.getElementById(id).classList.remove('open');
+}
+
+async function populateDonorTypeSelects() {
+  const { data: donorTypes } = await sb.from('donor_types').select('*').eq('year_id', appSettings.activeYearId).order('name');
+  const options = (donorTypes || []).map(dt =>
+    `<option value="${dt.name}" data-percent="${dt.percentage}">${dt.name} (${(Number(dt.percentage) * 100).toFixed(0)}%)</option>`
+  ).join('');
+  const dType = document.getElementById('d-type');
+  const fType = document.getElementById('f-type');
+  if (dType) dType.innerHTML = options;
+  if (fType) fType.innerHTML = options;
+  return donorTypes || [];
 }
 
 // ============================================
