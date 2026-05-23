@@ -980,10 +980,14 @@ async function renderAdminPanel() {
 }
 
 async function switchYear(yearId) {
-  if (yearId === appSettings.activeYearId) return;
+  if (yearId === appSettings.activeYearId) {
+    alert('This year is already active.');
+    return;
+  }
   const { data } = await sb.from('settings').select('*').eq('id', yearId).single();
   if (!data) return;
-  if (!confirm(`Switch to the ${data.year} auction year? Any unsaved work will remain on the current year.`)) return;
+  const confirmed = window.confirm(`Switch to the ${data.year} auction year?`);
+  if (!confirmed) return;
   appSettings.activeYearId = data.id;
   appSettings.auctionYear = data.year;
   appSettings.auctionTitle = data.title;
