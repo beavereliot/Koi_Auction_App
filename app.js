@@ -1063,11 +1063,12 @@ async function renderAdminPanel() {
       <div class="card-body">
         <p style="font-size:13px;color:#666;margin-bottom:12px;">Export current year data as CSV files.</p>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="btn btn-outline btn-sm" onclick="exportCSV('donors')">Export donors</button>
-          <button class="btn btn-outline btn-sm" onclick="exportCSV('fish')">Export fish</button>
-          <button class="btn btn-outline btn-sm" onclick="exportCSV('bidders')">Export bidders</button>
-          <button class="btn btn-outline btn-sm" onclick="exportCSV('sales')">Export sales</button>
-          <button class="btn btn-outline btn-sm" onclick="exportCSV('misc_purchases')">Export misc</button>
+            <button class="btn btn-outline btn-sm" onclick="exportCSV('donors')">Export donors</button>
+            <button class="btn btn-outline btn-sm" onclick="exportCSV('fish')">Export fish</button>
+            <button class="btn btn-outline btn-sm" onclick="exportCSV('bidders')">Export bidders</button>
+            <button class="btn btn-outline btn-sm" onclick="exportCSV('sales')">Export sales</button>
+            <button class="btn btn-outline btn-sm" onclick="exportCSV('misc_purchases')">Export misc</button>
+            <button class="btn btn-primary btn-sm" onclick="exportCSV('donor_payouts')">⭐ Export donor payouts</button>
         </div>
       </div>
     </div>
@@ -1187,48 +1188,380 @@ async function changePassword() {
 }
 
 async function exportCSV(table) {
-  let data, filename;
+  const XLSX = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm');
 
-  function flatten(row) {
-    const flat = {};
-    for (const key of Object.keys(row)) {
-      if (row[key] && typeof row[key] === 'object' && !Array.isArray(row[key])) {
-        for (const subKey of Object.keys(row[key])) {
-          flat[`${key}_${subKey}`] = row[key][subKey];
-        }
-      } else {
-        flat[key] = row[key];
+  const teal = 'FF1a5f7a';
+  const lightTeal = 'FFe8f4f8';
+  const navy = 'FF0d3d52';
+  const white = 'FFFFFFFF';
+  const amber = 'FFfef5e0';
+  const red = 'FFfdecea';
+  const green = 'FFe0f9f0';
+
+  function headerStyle(bg) {
+    return {
+      fill: { fgColor: { rgb: bg || teal } },
+      font: { bold: true, color: { rgb: white }, sz: 11 },
+      alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+      border: {
+        bottom: { style: 'thin', color: { rgb: navy } },
+        right: { style: 'thin', color: { rgb: navy } },
       }
-    }
-    return flat;
+    };
   }
+
+  function cellStyle(bg, bold, align) {
+    return {
+      fill: { fgColor: { rgb: bg || white } },
+      font: { bold: !!bold, sz: 10 },
+      alignment: { horizontal: align || 'left', vertical: 'center' },
+      border: {
+        bottom: { style: 'hair', color: { rgb: 'FFCCCCCC' } },
+        right: { style: 'hair', color: { rgb: 'FFCCCCCC' } },
+      }
+    };
+  }
+
+  function titleStyle() {
+    return {
+      fill: { fgColor: { rgb: navy } },
+      font: { bold: true, color: { rgb: white }, sz: 14 },
+      alignment: { horizontal: 'left', vertical: 'center' },
+    };
+  }
+
+  function subTitleStyle() {
+    return {
+      fill: { fgColor: { rgb: lightTeal } },
+      font: { bold: false, color: { rgb: navy }, sz: 10 },
+      alignment: { horizontal: 'left', vertical: 'center' },
+    };
+  }
+
+  function addTitleRows(ws, data, title, subtitle, numCols) {
+    const merge = (r) => ({ s: { r, c: 0 }, e: { r, c: numCols - 1 } });
+    if (!ws['!merges']) ws['!merges'] = [];
+    ws['!merges'].push(merge(0), merge(1));
+
+    XLSX.utils.sheet_add_aoa(ws, [[title], [subtitle]], { origin: 'A1' });
+    ws['A1'].s = titleStyle();
+    ws['A2'].s = subTitleStyle();
+  }
+
+  function setColWidths(ws, widths) {
+    ws['!cols'] = widths.map(w => ({ wch: w }));
+  }
+
+  function makeCell(value, style) {
+    return { v: value, s: style, t: typeof value === 'number' ? 'n' : 's' };
+  }
+
+  const wb = XLSX.utils.book_new();
+  const title = 'Pikes Peak Koi & Water Garden Society';
+  const subtitle = appSettings.auctionTitle;
 
   if (table === 'donors') {
-    const r = await sb.from('donors').select('*').eq('year_id', appSettings.activeYearId);
-    data = r.data; filename = `donors_${appSettings.auctionYear}.csv`;
-  } else if (table === 'fish') {
-    const r = await sb.from('fish').select('*, tanks(letter), donors(first_name,last_name)').eq('year_id', appSettings.activeYearId);
-    data = r.data; filename = `fish_${appSettings.auctionYear}.csv`;
-  } else if (table === 'bidders') {
-    const r = await sb.from('bidders').select('*').eq('year_id', appSettings.activeYearId);
-    data = r.data; filename = `bidders_${appSettings.auctionYear}.csv`;
-  } else if (table === 'sales') {
-    const r = await sb.from('sales').select('*, fish(description,fish_number,tanks(letter)), bidders(first_name,last_name,bidder_number)').eq('year_id', appSettings.activeYearId);
-    data = r.data; filename = `sales_${appSettings.auctionYear}.csv`;
-  } else if (table === 'misc_purchases') {
-    const r = await sb.from('misc_purchases').select('*, bidders(first_name,last_name,bidder_number)').eq('year_id', appSettings.activeYearId);
-    data = r.data; filename = `misc_${appSettings.auctionYear}.csv`;
-  }
+    const { data } = await sb.from('donors').select('*').eq('year_id', appSettings.activeYearId).order('last_name');
+    const ws = XLSX.utils.aoa_to_sheet([]);
+    const numCols = 6;
+    addTitleRows(ws, data, title, subtitle, numCols);
 
-  if (!data || data.length === 0) { alert('No data to export.'); return; }
-  const flatData = data.map(flatten);
-  const keys = Object.keys(flatData[0]);
-  const csv = [keys.join(','), ...flatData.map(row => keys.map(k => JSON.stringify(row[k] ?? '')).join(','))].join('\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = filename; a.click();
-  URL.revokeObjectURL(url);
+    const headers = ['First Name', 'Last Name', 'Phone', 'Email', 'Type', '# Fish'];
+    XLSX.utils.sheet_add_aoa(ws, [headers], { origin: 'A3' });
+    'ABCDEF'.split('').forEach((col, i) => {
+      ws[`${col}3`] = makeCell(headers[i], headerStyle());
+    });
+
+    (data || []).forEach((d, i) => {
+      const row = [d.first_name, d.last_name, d.phone || '', d.email || '', d.type, d.num_fish];
+      const r = 3 + i;
+      const bg = i % 2 === 0 ? white : lightTeal;
+      XLSX.utils.sheet_add_aoa(ws, [row], { origin: { r, c: 0 } });
+      row.forEach((_, ci) => {
+        const addr = XLSX.utils.encode_cell({ r, c: ci });
+        ws[addr].s = cellStyle(bg, false, ci === 5 ? 'center' : 'left');
+      });
+    });
+
+    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: 3 + (data || []).length, c: numCols - 1 } });
+    setColWidths(ws, [15, 15, 15, 25, 12, 8]);
+    ws['!rows'] = [{ hpt: 22 }, { hpt: 16 }];
+    XLSX.utils.book_append_sheet(wb, ws, 'Donors');
+    XLSX.writeFile(wb, `donors_${appSettings.auctionYear}.xlsx`);
+
+  } else if (table === 'fish') {
+    const { data } = await sb.from('fish').select('*, tanks(letter), donors(first_name, last_name), sales(sale_price)').eq('year_id', appSettings.activeYearId).order('fish_number');
+    const ws = XLSX.utils.aoa_to_sheet([]);
+    const numCols = 6;
+    addTitleRows(ws, data, title, subtitle, numCols);
+
+    const headers = ['Fish ID', 'Description', 'Donor', 'Type', 'Status', 'Sale Price'];
+    XLSX.utils.sheet_add_aoa(ws, [headers], { origin: 'A3' });
+    'ABCDEF'.split('').forEach((col, i) => {
+      ws[`${col}3`] = makeCell(headers[i], headerStyle());
+    });
+
+    (data || []).forEach((f, i) => {
+      const sold = f.sales && f.sales.length > 0;
+      const row = [
+        `${f.tanks?.letter || ''}${f.fish_number}`,
+        f.description,
+        f.donors ? `${f.donors.first_name} ${f.donors.last_name}` : '—',
+        f.type,
+        sold ? 'Sold' : 'Available',
+        sold ? Number(f.sales[0].sale_price) : '',
+      ];
+      const r = 3 + i;
+      const bg = sold ? green : (i % 2 === 0 ? white : lightTeal);
+      XLSX.utils.sheet_add_aoa(ws, [row], { origin: { r, c: 0 } });
+      row.forEach((_, ci) => {
+        const addr = XLSX.utils.encode_cell({ r, c: ci });
+        ws[addr].s = cellStyle(bg, false, ci === 5 ? 'right' : 'left');
+      });
+    });
+
+    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: 3 + (data || []).length, c: numCols - 1 } });
+    setColWidths(ws, [10, 30, 20, 12, 12, 12]);
+    ws['!rows'] = [{ hpt: 22 }, { hpt: 16 }];
+    XLSX.utils.book_append_sheet(wb, ws, 'Fish');
+    XLSX.writeFile(wb, `fish_${appSettings.auctionYear}.xlsx`);
+
+  } else if (table === 'bidders') {
+    const { data } = await sb.from('bidders').select('*').eq('year_id', appSettings.activeYearId).order('bidder_number');
+    const ws = XLSX.utils.aoa_to_sheet([]);
+    const numCols = 8;
+    addTitleRows(ws, data, title, subtitle, numCols);
+
+    const headers = ['Bidder #', 'First Name', 'Last Name', 'Phone', 'Member', 'Payment', 'Status', 'Total Paid'];
+    XLSX.utils.sheet_add_aoa(ws, [headers], { origin: 'A3' });
+    'ABCDEFGH'.split('').forEach((col, i) => {
+      ws[`${col}3`] = makeCell(headers[i], headerStyle());
+    });
+
+    (data || []).forEach((b, i) => {
+      const row = [
+        b.bidder_number,
+        b.first_name,
+        b.last_name,
+        b.phone || '',
+        b.is_member ? 'Yes' : 'No',
+        b.payment_method || '',
+        b.is_paid ? 'Paid' : 'Unpaid',
+        b.is_paid ? Number(b.total_paid || 0) : '',
+      ];
+      const r = 3 + i;
+      const bg = b.is_paid ? green : (i % 2 === 0 ? white : lightTeal);
+      XLSX.utils.sheet_add_aoa(ws, [row], { origin: { r, c: 0 } });
+      row.forEach((_, ci) => {
+        const addr = XLSX.utils.encode_cell({ r, c: ci });
+        ws[addr].s = cellStyle(bg, false, [0, 7].includes(ci) ? 'right' : 'left');
+      });
+    });
+
+    const paidCount = (data || []).filter(b => b.is_paid).length;
+    const totalCollected = (data || []).reduce((s, b) => s + Number(b.total_paid || 0), 0);
+    const summaryRow = 3 + (data || []).length;
+    const summary = ['', '', '', '', '', '', 'TOTAL COLLECTED', totalCollected];
+    XLSX.utils.sheet_add_aoa(ws, [summary], { origin: { r: summaryRow, c: 0 } });
+    summary.forEach((_, ci) => {
+      const addr = XLSX.utils.encode_cell({ r: summaryRow, c: ci });
+      ws[addr] = makeCell(summary[ci], cellStyle(lightTeal, true, ci === 7 ? 'right' : 'left'));
+    });
+
+    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: summaryRow, c: numCols - 1 } });
+    setColWidths(ws, [10, 15, 15, 15, 8, 14, 10, 12]);
+    ws['!rows'] = [{ hpt: 22 }, { hpt: 16 }];
+    XLSX.utils.book_append_sheet(wb, ws, 'Bidders');
+    XLSX.writeFile(wb, `bidders_${appSettings.auctionYear}.xlsx`);
+
+  } else if (table === 'sales') {
+    const { data } = await sb.from('sales').select('*, fish(description, fish_number, tanks(letter)), bidders(first_name, last_name, bidder_number)').eq('year_id', appSettings.activeYearId).order('created_at');
+    const ws = XLSX.utils.aoa_to_sheet([]);
+    const numCols = 6;
+    addTitleRows(ws, data, title, subtitle, numCols);
+
+    const headers = ['Fish ID', 'Description', 'Bidder #', 'Bidder Name', 'Sale Price', 'Date'];
+    XLSX.utils.sheet_add_aoa(ws, [headers], { origin: 'A3' });
+    'ABCDEF'.split('').forEach((col, i) => {
+      ws[`${col}3`] = makeCell(headers[i], headerStyle());
+    });
+
+    (data || []).forEach((s, i) => {
+      const row = [
+        `${s.fish?.tanks?.letter || ''}${s.fish?.fish_number || ''}`,
+        s.fish?.description || '',
+        s.bidders?.bidder_number || '',
+        `${s.bidders?.first_name || ''} ${s.bidders?.last_name || ''}`.trim(),
+        Number(s.sale_price),
+        s.created_at ? s.created_at.split('T')[0] : '',
+      ];
+      const r = 3 + i;
+      const bg = i % 2 === 0 ? white : lightTeal;
+      XLSX.utils.sheet_add_aoa(ws, [row], { origin: { r, c: 0 } });
+      row.forEach((_, ci) => {
+        const addr = XLSX.utils.encode_cell({ r, c: ci });
+        ws[addr].s = cellStyle(bg, false, [2, 4].includes(ci) ? 'right' : 'left');
+      });
+    });
+
+    const totalRow = 3 + (data || []).length;
+    const grandTotal = (data || []).reduce((s, r) => s + Number(r.sale_price), 0);
+    const summary = ['', '', '', 'TOTAL', grandTotal, ''];
+    XLSX.utils.sheet_add_aoa(ws, [summary], { origin: { r: totalRow, c: 0 } });
+    summary.forEach((_, ci) => {
+      const addr = XLSX.utils.encode_cell({ r: totalRow, c: ci });
+      ws[addr] = makeCell(summary[ci], cellStyle(lightTeal, true, [3, 4].includes(ci) ? 'right' : 'left'));
+    });
+
+    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: totalRow, c: numCols - 1 } });
+    setColWidths(ws, [10, 30, 10, 20, 12, 14]);
+    ws['!rows'] = [{ hpt: 22 }, { hpt: 16 }];
+    XLSX.utils.book_append_sheet(wb, ws, 'Sales');
+    XLSX.writeFile(wb, `sales_${appSettings.auctionYear}.xlsx`);
+
+  } else if (table === 'misc_purchases') {
+    const { data } = await sb.from('misc_purchases').select('*, bidders(first_name, last_name, bidder_number)').eq('year_id', appSettings.activeYearId).order('created_at');
+    const ws = XLSX.utils.aoa_to_sheet([]);
+    const numCols = 6;
+    addTitleRows(ws, data, title, subtitle, numCols);
+
+    const headers = ['Bidder #', 'Bidder Name', 'Item', 'Qty', 'Unit Price', 'Total'];
+    XLSX.utils.sheet_add_aoa(ws, [headers], { origin: 'A3' });
+    'ABCDEF'.split('').forEach((col, i) => {
+      ws[`${col}3`] = makeCell(headers[i], headerStyle());
+    });
+
+    (data || []).forEach((p, i) => {
+      const row = [
+        p.bidders?.bidder_number || '',
+        `${p.bidders?.first_name || ''} ${p.bidders?.last_name || ''}`.trim(),
+        p.item_name,
+        Number(p.quantity),
+        Number(p.unit_price),
+        Number(p.total_price),
+      ];
+      const r = 3 + i;
+      const bg = i % 2 === 0 ? white : lightTeal;
+      XLSX.utils.sheet_add_aoa(ws, [row], { origin: { r, c: 0 } });
+      row.forEach((_, ci) => {
+        const addr = XLSX.utils.encode_cell({ r, c: ci });
+        ws[addr].s = cellStyle(bg, false, [0, 3, 4, 5].includes(ci) ? 'right' : 'left');
+      });
+    });
+
+    const totalRow = 3 + (data || []).length;
+    const grandTotal = (data || []).reduce((s, r) => s + Number(r.total_price), 0);
+    const summary = ['', '', '', '', 'TOTAL', grandTotal];
+    XLSX.utils.sheet_add_aoa(ws, [summary], { origin: { r: totalRow, c: 0 } });
+    summary.forEach((_, ci) => {
+      const addr = XLSX.utils.encode_cell({ r: totalRow, c: ci });
+      ws[addr] = makeCell(summary[ci], cellStyle(lightTeal, true, [4, 5].includes(ci) ? 'right' : 'left'));
+    });
+
+    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: totalRow, c: numCols - 1 } });
+    setColWidths(ws, [10, 20, 25, 8, 12, 12]);
+    ws['!rows'] = [{ hpt: 22 }, { hpt: 16 }];
+    XLSX.utils.book_append_sheet(wb, ws, 'Misc Purchases');
+    XLSX.writeFile(wb, `misc_${appSettings.auctionYear}.xlsx`);
+
+  } else if (table === 'donor_payouts') {
+    const { data: donors } = await sb.from('donors').select('*').eq('year_id', appSettings.activeYearId).order('last_name');
+    const { data: fish } = await sb.from('fish').select('*, tanks(letter), sales(sale_price)').eq('year_id', appSettings.activeYearId);
+
+    const ws = XLSX.utils.aoa_to_sheet([]);
+    const numCols = 7;
+    addTitleRows(ws, [], title, subtitle, numCols);
+
+    const headers = ['Donor', 'Type', 'Payout %', 'Fish ID', 'Description', 'Sale Price', 'Donor Payout'];
+    XLSX.utils.sheet_add_aoa(ws, [headers], { origin: 'A3' });
+    'ABCDEFG'.split('').forEach((col, i) => {
+      ws[`${col}3`] = makeCell(headers[i], headerStyle());
+    });
+
+    let currentRow = 4;
+
+    for (const donor of (donors || [])) {
+      const donorFish = (fish || []).filter(f => f.donor_id === donor.id);
+      const percent = donor.type === 'Pickup' ? 0.40 : donor.type === 'Dropoff' ? 0.50 : 0;
+      const percentLabel = `${(percent * 100).toFixed(0)}%`;
+      const donorName = `${donor.first_name} ${donor.last_name}`;
+
+      let donorTotal = 0;
+      let donorPayout = 0;
+
+      for (const f of donorFish) {
+        const sold = f.sales && f.sales.length > 0;
+        const salePrice = sold ? Number(f.sales[0].sale_price) : 0;
+        const fishPayout = salePrice * percent;
+        donorTotal += salePrice;
+        donorPayout += fishPayout;
+
+        const row = [
+          donorName,
+          donor.type,
+          percentLabel,
+          `${f.tanks?.letter || ''}${f.fish_number}`,
+          f.description,
+          sold ? salePrice : '',
+          sold && fishPayout > 0 ? fishPayout : '',
+        ];
+
+        const bg = sold ? green : (currentRow % 2 === 0 ? white : lightTeal);
+        XLSX.utils.sheet_add_aoa(ws, [row], { origin: { r: currentRow - 1, c: 0 } });
+        row.forEach((_, ci) => {
+          const addr = XLSX.utils.encode_cell({ r: currentRow - 1, c: ci });
+          ws[addr].s = cellStyle(bg, false, [5, 6].includes(ci) ? 'right' : 'left');
+        });
+        currentRow++;
+      }
+
+      const summaryRow = [
+        donorName,
+        donor.type,
+        percentLabel,
+        '',
+        `TOTAL OWED TO DONOR`,
+        donorTotal > 0 ? donorTotal : '',
+        donorPayout > 0 ? donorPayout : '',
+      ];
+      XLSX.utils.sheet_add_aoa(ws, [summaryRow], { origin: { r: currentRow - 1, c: 0 } });
+      summaryRow.forEach((_, ci) => {
+        const addr = XLSX.utils.encode_cell({ r: currentRow - 1, c: ci });
+        ws[addr] = makeCell(summaryRow[ci], cellStyle(amber, true, [5, 6].includes(ci) ? 'right' : 'left'));
+      });
+      currentRow++;
+
+      const blankRow = ['', '', '', '', '', '', ''];
+      XLSX.utils.sheet_add_aoa(ws, [blankRow], { origin: { r: currentRow - 1, c: 0 } });
+      blankRow.forEach((_, ci) => {
+        const addr = XLSX.utils.encode_cell({ r: currentRow - 1, c: ci });
+        ws[addr] = makeCell('', cellStyle(white, false));
+      });
+      currentRow++;
+    }
+
+    const grandTotal = (fish || [])
+      .filter(f => f.sales && f.sales.length > 0)
+      .reduce((s, f) => {
+        const donor = (donors || []).find(d => d.id === f.donor_id);
+        const percent = donor?.type === 'Pickup' ? 0.40 : donor?.type === 'Dropoff' ? 0.50 : 0;
+        return s + Number(f.sales[0].sale_price) * percent;
+      }, 0);
+
+    const grandRow = ['', '', '', '', 'GRAND TOTAL OWED TO ALL DONORS', '', grandTotal];
+    XLSX.utils.sheet_add_aoa(ws, [grandRow], { origin: { r: currentRow - 1, c: 0 } });
+    grandRow.forEach((_, ci) => {
+      const addr = XLSX.utils.encode_cell({ r: currentRow - 1, c: ci });
+      ws[addr] = makeCell(grandRow[ci], cellStyle(teal, true, [5, 6].includes(ci) ? 'right' : 'left'));
+      if (ws[addr].s.font) ws[addr].s.font.color = { rgb: white };
+    });
+
+    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: currentRow, c: numCols - 1 } });
+    setColWidths(ws, [22, 12, 10, 10, 28, 12, 14]);
+    ws['!rows'] = [{ hpt: 22 }, { hpt: 16 }];
+    XLSX.utils.book_append_sheet(wb, ws, 'Donor Payouts');
+    XLSX.writeFile(wb, `donor_payouts_${appSettings.auctionYear}.xlsx`);
+  }
 }
 
 // ============================================
