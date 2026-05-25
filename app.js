@@ -85,19 +85,158 @@ function attachPhoneFormatter(id) {
 }
 
 // ============================================
+// BIDDER LIVE LOOKUP
+// ============================================
+let bidderCache = {};
+
+async function loadBidderCache() {
+  const { data } = await sb.from('bidders').select('bidder_number, first_name, last_name').eq('year_id', appSettings.activeYearId);
+  bidderCache = {};
+  (data || []).forEach(b => { bidderCache[b.bidder_number] = `${b.first_name} ${b.last_name}`; });
+}
+
+function attachBidderLookup(inputId, displayId) {
+  const input = document.getElementById(inputId);
+  const display = document.getElementById(displayId);
+  if (!input || !display) return;
+  input.addEventListener('input', () => {
+    const num = parseInt(input.value);
+    if (!num) { display.textContent = ''; display.className = 'bidder-name-display'; return; }
+    const name = bidderCache[num];
+    if (name) {
+      display.textContent = name;
+      display.className = 'bidder-name-display';
+    } else {
+      display.textContent = 'Not found';
+      display.className = 'bidder-name-display not-found';
+    }
+  });
+}
+
+// ============================================
 // DASHBOARD
 // ============================================
+let dashTotalsTab = 'donor_payouts';
+
 async function renderDashboard() {
   setContent('<p style="color:#4db8d4;padding:1rem;">Loading dashboard...</p>');
   if (!appSettings.activeYearId) { setContent('<p style="color:#c0392b;padding:1rem;">No active year found. Please go to Admin to create one.</p>'); return; }
-  const [{ count: fishCount }, { count: bidderCount }, { data: sales }, { data: misc }] = await Promise.all([
+
+  const [
+    { count: fishCount },
+    { count: bidderCount },
+    { data: sales },
+    { data: misc },
+    { data: fish },
+    { data: donors },
+    { data: payments },
+    { data: miscItems },
+  ] = await Promise.all([
     sb.from('fish').select('*', { count: 'exact', head: true }).eq('year_id', appSettings.activeYearId),
     sb.from('bidders').select('*', { count: 'exact', head: true }).eq('year_id', appSettings.activeYearId),
-    sb.from('sales').select('sale_price').eq('year_id', appSettings.activeYearId),
-    sb.from('misc_purchases').select('total_price').eq('year_id', appSettings.activeYearId),
+    sb.from('sales').select('sale_price, fish_id').eq('year_id', appSettings.activeYearId),
+    sb.from('misc_purchases').select('total_price, item_name, bidder_id').eq('year_id', appSettings.activeYearId),
+    sb.from('fish').select('id, donor_id, donor_percent').eq('year_id', appSettings.activeYearId),
+    sb.from('donors').select('id, first_name, last_name, type').eq('year_id', appSettings.activeYearId),
+    sb.from('payments').select('amount, payment_method').eq('year_id', appSettings.activeYearId),
+    sb.from('misc_items').select('name').eq('year_id', appSettings.activeYearId),
   ]);
+
   const auctionTotal = (sales || []).reduce((s, r) => s + Number(r.sale_price), 0);
   const miscTotal = (misc || []).reduce((s, r) => s + Number(r.total_price), 0);
+
+  let donorAuctionPayout = 0;
+  let clubAuctionPortion = 0;
+  (sales || []).forEach(s => {
+    const f = (fish || []).find(f => f.id === s.fish_id);
+    const pct = f ? Number(f.donor_percent) : 0;
+    donorAuctionPayout += Number(s.sale_price) * pct;
+    clubAuctionPortion += Number(s.sale_price) * (1 - pct);
+  });
+
+  const cashTotal = (payments || []).filter(p => p.payment_method === 'Cash').reduce((s, r) => s + Number(r.amount), 0);
+  const ccTotal = (payments || []).filter(p => p.payment_method === 'Credit Card').reduce((s, r) => s + Number(r.amount), 0);
+  const checkTotal = (payments || []).filter(p => p.payment_method === 'Check').reduce((s, r) => s + Number(r.amount), 0);
+
+  // Donor payouts
+  const donorPayouts = (donors || []).map(d => {
+    const donorFishIds = (fish || []).filter(f => f.donor_id === d.id).map(f => f.id);
+    const donorSales = (sales || []).filter(s => donorFishIds.includes(s.fish_id));
+    const total = donorSales.reduce((s, r) => s + Number(r.sale_price) * (fish.find(f => f.id === r.fish_id)?.donor_percent || 0), 0);
+    return { name: `${d.first_name} ${d.last_name}`, type: d.type, total };
+  }).filter(d => d.total > 0);
+
+  // Misc item breakdown
+  const miscBreakdown = {};
+  (misc || []).forEach(p => {
+    if (!miscBreakdown[p.item_name]) miscBreakdown[p.item_name] = { qty: 0, total: 0 };
+    miscBreakdown[p.item_name].qty += Number(p.quantity || 1);
+    miscBreakdown[p.item_name].total += Number(p.total_price);
+  });
+
+  const totalsTabsHtml = `
+    <div class="totals-tabs">
+      <div class="totals-tab ${dashTotalsTab === 'donor_payouts' ? 'active' : ''}" onclick="switchDashTab('donor_payouts')">Donor payouts</div>
+      <div class="totals-tab ${dashTotalsTab === 'misc_items' ? 'active' : ''}" onclick="switchDashTab('misc_items')">Misc items sold</div>
+      <div class="totals-tab ${dashTotalsTab === 'payments' ? 'active' : ''}" onclick="switchDashTab('payments')">Payment methods</div>
+    </div>
+  `;
+
+  const donorPayoutsHtml = `
+    <table class="table">
+      <thead><tr><th>Donor</th><th>Type</th><th style="text-align:right;">Total owed</th></tr></thead>
+      <tbody>
+        ${donorPayouts.length > 0 ? donorPayouts.map(d => `
+          <tr>
+            <td>${d.name}</td>
+            <td>${d.type}</td>
+            <td style="text-align:right;font-weight:bold;">$${d.total.toFixed(2)}</td>
+          </tr>
+        `).join('') : '<tr><td colspan="3" style="text-align:center;color:#888;">No payouts yet</td></tr>'}
+        <tr style="background:#f0f9fc;">
+          <td colspan="2" style="font-weight:bold;">Total owed to all donors</td>
+          <td style="text-align:right;font-weight:bold;color:#c0392b;">$${donorPayouts.reduce((s, d) => s + d.total, 0).toFixed(2)}</td>
+        </tr>
+      </tbody>
+    </table>
+  `;
+
+  const miscItemsHtml = `
+    <table class="table">
+      <thead><tr><th>Item</th><th style="text-align:right;">Qty sold</th><th style="text-align:right;">Total $</th></tr></thead>
+      <tbody>
+        ${Object.keys(miscBreakdown).length > 0 ? Object.entries(miscBreakdown).sort((a,b) => b[1].total - a[1].total).map(([name, data]) => `
+          <tr>
+            <td>${name}</td>
+            <td style="text-align:right;">${data.qty}</td>
+            <td style="text-align:right;font-weight:bold;">$${data.total.toFixed(2)}</td>
+          </tr>
+        `).join('') : '<tr><td colspan="3" style="text-align:center;color:#888;">No misc purchases yet</td></tr>'}
+        <tr style="background:#f0f9fc;">
+          <td colspan="2" style="font-weight:bold;">Total misc revenue</td>
+          <td style="text-align:right;font-weight:bold;color:#1a5f7a;">$${miscTotal.toFixed(2)}</td>
+        </tr>
+      </tbody>
+    </table>
+  `;
+
+  const paymentsHtml = `
+    <table class="table">
+      <thead><tr><th>Payment method</th><th style="text-align:right;">Total received</th></tr></thead>
+      <tbody>
+        <tr><td>💵 Cash</td><td style="text-align:right;font-weight:bold;">$${cashTotal.toFixed(2)}</td></tr>
+        <tr><td>💳 Credit card</td><td style="text-align:right;font-weight:bold;">$${ccTotal.toFixed(2)}</td></tr>
+        <tr><td>📝 Check</td><td style="text-align:right;font-weight:bold;">$${checkTotal.toFixed(2)}</td></tr>
+        <tr style="background:#f0f9fc;">
+          <td style="font-weight:bold;">Total collected</td>
+          <td style="text-align:right;font-weight:bold;color:#1a5f7a;">$${(cashTotal + ccTotal + checkTotal).toFixed(2)}</td>
+        </tr>
+      </tbody>
+    </table>
+  `;
+
+  const tabContent = dashTotalsTab === 'donor_payouts' ? donorPayoutsHtml : dashTotalsTab === 'misc_items' ? miscItemsHtml : paymentsHtml;
+
   setContent(`
     <div class="stats-grid">
       <div class="stat-card">
@@ -116,17 +255,41 @@ async function renderDashboard() {
         <div class="stat-label">Misc sales</div>
         <div class="stat-value">$${miscTotal.toFixed(0)}</div>
       </div>
+      <div class="stat-card" style="border-left-color:#c0392b;">
+        <div class="stat-label">Donor payout</div>
+        <div class="stat-value">$${donorAuctionPayout.toFixed(0)}</div>
+      </div>
+      <div class="stat-card" style="border-left-color:#27ae60;">
+        <div class="stat-label">Club portion</div>
+        <div class="stat-value">$${clubAuctionPortion.toFixed(0)}</div>
+      </div>
     </div>
+
     <div class="card">
       <div class="card-header"><div class="card-header-title">Grand total</div></div>
       <div class="card-body">
-        <div class="total-row grand">
-          <span>Total revenue</span>
-          <span class="amount">$${(auctionTotal + miscTotal).toFixed(0)}</span>
-        </div>
+        <div class="total-row"><span>Auction sales</span><span>$${auctionTotal.toFixed(2)}</span></div>
+        <div class="total-row"><span>Misc sales</span><span>$${miscTotal.toFixed(2)}</span></div>
+        <div class="total-row grand"><span>Total revenue</span><span class="amount">$${(auctionTotal + miscTotal).toFixed(2)}</span></div>
+        <hr class="divider">
+        <div class="total-row"><span style="color:#c0392b;">Donor payout (auction)</span><span style="color:#c0392b;">-$${donorAuctionPayout.toFixed(2)}</span></div>
+        <div class="total-row grand"><span>Club net (auction)</span><span class="amount" style="color:#27ae60;">$${clubAuctionPortion.toFixed(2)}</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><div class="card-header-title">Totals</div></div>
+      <div class="card-body">
+        ${totalsTabsHtml}
+        <div id="dash-tab-content">${tabContent}</div>
       </div>
     </div>
   `);
+}
+
+function switchDashTab(tab) {
+  dashTotalsTab = tab;
+  renderDashboard();
 }
 
 // ============================================
@@ -174,8 +337,7 @@ async function renderDonors() {
         <div class="form-group"><label>Phone</label><input id="d-phone" type="text" placeholder="xxx-xxx-xxxx" /></div>
         <div class="form-group"><label>Email</label><input id="d-email" type="email" /></div>
         <div class="form-group"><label>Type</label>
-          <select id="d-type" id="d-type">
-          </select>
+          <select id="d-type"></select>
         </div>
         <div class="form-group"><label># of fish</label><input id="d-fish" type="number" value="1" min="0" /></div>
         <div class="modal-actions">
@@ -255,9 +417,16 @@ async function renderFish() {
   setContent('<p style="color:#4db8d4;padding:1rem;">Loading fish...</p>');
   const [{ data: tanks }, { data: fish }, { data: donors }] = await Promise.all([
     sb.from('tanks').select('*').eq('year_id', appSettings.activeYearId).order('letter'),
-    sb.from('fish').select('*, tanks(letter), donors(id, first_name, last_name, type), sales(sale_price)').eq('year_id', appSettings.activeYearId).order('fish_number'),
+    sb.from('fish').select('*, tanks(letter), donors(id, first_name, last_name, type), sales(sale_price, bidder_id)').eq('year_id', appSettings.activeYearId).order('fish_number'),
     sb.from('donors').select('id, first_name, last_name, type').eq('year_id', appSettings.activeYearId).order('last_name'),
   ]);
+
+  const allBidders = fish ? [...new Set((fish || []).flatMap(f => f.sales || []).map(s => s.bidder_id))].filter(Boolean) : [];
+  let paidBidderIds = new Set();
+  if (allBidders.length > 0) {
+    const { data: bidderData } = await sb.from('bidders').select('id, is_paid').in('id', allBidders);
+    (bidderData || []).filter(b => b.is_paid).forEach(b => paidBidderIds.add(b.id));
+  }
 
   allDonorsForFish = donors || [];
   const tankFish = (tankLetter) => fish ? fish.filter(f => f.tanks?.letter === tankLetter) : [];
@@ -304,23 +473,28 @@ async function renderFish() {
               ${tf.length === 0
                 ? '<div class="empty-state">No fish in this tank yet.</div>'
                 : `<table class="table">
-                    <thead><tr><th>ID</th><th>Description</th><th>Donor</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead>
+                    <thead><tr><th>ID</th><th>Description</th><th>Donor</th><th>Type</th><th>Sale status</th><th>Payment</th><th>Actions</th></tr></thead>
                     <tbody>
-                      ${tf.map(f => `
-                        <tr>
-                          <td><span class="fish-id">${tank.letter}${f.fish_number}</span></td>
-                          <td>${f.description}</td>
-                          <td>${f.donors ? f.donors.first_name + ' ' + f.donors.last_name : '—'}</td>
-                          <td><span class="badge badge-${(f.type||'').toLowerCase()}">${f.type || '—'}</span></td>
-                          <td>${f.sales && f.sales.length > 0
-                            ? `<span class="badge badge-sold">Sold $${f.sales[0].sale_price}</span>`
-                            : '<span class="badge badge-unsold">Available</span>'}</td>
-                          <td>
-                            <button class="btn btn-warning btn-xs" onclick='openEditFishModal(${JSON.stringify(f)}, "${tank.id}")'>Edit</button>
-                            <button class="btn btn-danger btn-xs" onclick="deleteFish('${f.id}')">Delete</button>
-                          </td>
-                        </tr>
-                      `).join('')}
+                      ${tf.map(f => {
+                        const sold = f.sales && f.sales.length > 0;
+                        const bidderPaid = sold && paidBidderIds.has(f.sales[0].bidder_id);
+                        const paymentBadge = !sold ? '—' : bidderPaid
+                          ? '<span class="badge badge-sold-paid">Paid</span>'
+                          : '<span class="badge badge-sold-unpaid">Unpaid</span>';
+                        return `
+                          <tr>
+                            <td><span class="fish-id">${tank.letter}${f.fish_number}</span></td>
+                            <td>${f.description}</td>
+                            <td>${f.donors ? f.donors.first_name + ' ' + f.donors.last_name : '—'}</td>
+                            <td><span class="badge badge-${(f.type||'').toLowerCase()}">${f.type || '—'}</span></td>
+                            <td>${sold ? `<span class="badge badge-sold">Sold $${f.sales[0].sale_price}</span>` : '<span class="badge badge-unsold">Available</span>'}</td>
+                            <td>${paymentBadge}</td>
+                            <td>
+                              <button class="btn btn-warning btn-xs" onclick='openEditFishModal(${JSON.stringify(f)}, "${tank.id}")'>Edit</button>
+                              <button class="btn btn-danger btn-xs" onclick="deleteFish('${f.id}')">Delete</button>
+                            </td>
+                          </tr>`;
+                      }).join('')}
                     </tbody>
                   </table>`
               }
@@ -360,8 +534,7 @@ async function renderFish() {
           <select id="f-donor" onchange="autoFillFishType()" ${noDonors ? 'disabled' : ''}>${donorOptions}</select>
         </div>
         <div class="form-group"><label>Type</label>
-          <select id="f-type">
-          </select>
+          <select id="f-type"></select>
         </div>
         <div class="modal-actions">
           <button class="btn btn-outline btn-sm" onclick="closeModal('fish-modal')">Cancel</button>
@@ -400,10 +573,14 @@ async function openFishModal(tankId, tankLetter) {
   document.getElementById('fish-modal-title').textContent = 'Add fish to Tank ' + tankLetter;
   document.getElementById('fish-modal-tank-id').value = tankId;
   document.getElementById('f-id').value = '';
-  document.getElementById('f-num').value = '';
   document.getElementById('f-desc').value = '';
   document.getElementById('fish-modal').classList.add('open');
   await populateDonorTypeSelects();
+
+  const { data: existingFish } = await sb.from('fish').select('fish_number').eq('tank_id', tankId).order('fish_number', { ascending: false }).limit(1);
+  const nextNum = existingFish && existingFish.length > 0 ? existingFish[0].fish_number + 1 : 1;
+  document.getElementById('f-num').value = nextNum;
+
   const donorSelect = document.getElementById('f-donor');
   if (donorSelect && donorSelect.options.length > 0) {
     donorSelect.selectedIndex = 0;
@@ -469,6 +646,7 @@ async function saveFish() {
   closeModal('fish-modal');
   renderFish();
 }
+
 async function deleteFish(id) {
   if (!window.confirm('Delete this fish? This cannot be undone.')) return;
   await sb.from('sales').delete().eq('fish_id', id);
@@ -493,13 +671,14 @@ async function deleteTank(id) {
 // ============================================
 // BIDDERS
 // ============================================
-
 async function renderBidders() {
   setContent('<p style="color:#4db8d4;padding:1rem;">Loading bidders...</p>');
   const { data: bidders } = await sb.from('bidders').select('*').eq('year_id', appSettings.activeYearId).order('bidder_number');
   const { data: allSales } = await sb.from('sales').select('bidder_id, sale_price').eq('year_id', appSettings.activeYearId);
   const { data: allMisc } = await sb.from('misc_purchases').select('bidder_id, total_price').eq('year_id', appSettings.activeYearId);
   const { data: allPayments } = await sb.from('payments').select('bidder_id, amount').eq('year_id', appSettings.activeYearId);
+
+  const nextBidderNum = bidders && bidders.length > 0 ? Math.max(...bidders.map(b => b.bidder_number)) + 1 : 1;
 
   function getBidderTotals(bidderId) {
     const sales = (allSales || []).filter(s => s.bidder_id === bidderId).reduce((s, r) => s + Number(r.sale_price), 0);
@@ -520,7 +699,7 @@ async function renderBidders() {
   setContent(`
     <div class="page-header">
       <div class="section-label">Bidder registry</div>
-      <button class="btn btn-primary btn-sm" onclick="openBidderModal()">+ Register bidder</button>
+      <button class="btn btn-primary btn-sm" onclick="openBidderModal(${nextBidderNum})">+ Register bidder</button>
     </div>
     <div class="card">
       <div class="card-body">
@@ -573,10 +752,11 @@ async function renderBidders() {
   attachPhoneFormatter('b-phone');
 }
 
-function openBidderModal() {
+function openBidderModal(nextNum) {
   document.getElementById('bidder-modal-title').textContent = 'Register bidder';
   document.getElementById('b-id').value = '';
-  document.getElementById('b-num').value = '';
+  document.getElementById('b-num').value = nextNum || '';
+  document.getElementById('b-num').readOnly = false;
   document.getElementById('b-first').value = '';
   document.getElementById('b-last').value = '';
   document.getElementById('b-phone').value = '';
@@ -620,6 +800,7 @@ async function saveBidder() {
     }
   }
   closeModal('bidder-modal');
+  await loadBidderCache();
   renderBidders();
 }
 
@@ -634,87 +815,224 @@ async function deleteBidder(id) {
   if (!window.confirm('Delete this bidder? This cannot be undone.')) return;
   const { error } = await sb.from('bidders').delete().eq('id', id);
   if (error) { alert('Error: ' + error.message); return; }
+  await loadBidderCache();
   renderBidders();
 }
 
 // ============================================
 // SCRIBE
 // ============================================
+let scribeSortOrder = 'recency';
+
 async function renderScribe() {
   setContent('<p style="color:#4db8d4;padding:1rem;">Loading scribe...</p>');
+
+  const { data: tanks } = await sb.from('tanks').select('*').eq('year_id', appSettings.activeYearId).order('letter');
   const { data: sales } = await sb.from('sales').select('*, fish(description, fish_number, tanks(letter)), bidders(first_name, last_name, bidder_number)').eq('year_id', appSettings.activeYearId).order('created_at', { ascending: false });
+
+  let sortedSales = [...(sales || [])];
+  if (scribeSortOrder === 'tank') {
+    sortedSales.sort((a, b) => (a.fish?.tanks?.letter || '').localeCompare(b.fish?.tanks?.letter || '') || (a.fish?.fish_number || 0) - (b.fish?.fish_number || 0));
+  } else if (scribeSortOrder === 'bidder') {
+    sortedSales.sort((a, b) => (a.bidders?.bidder_number || 0) - (b.bidders?.bidder_number || 0));
+  } else if (scribeSortOrder === 'donor') {
+    sortedSales.sort((a, b) => (a.fish?.tanks?.letter || '').localeCompare(b.fish?.tanks?.letter || ''));
+  }
+
+  const tankOptions = (tanks || []).map(t => `<option value="${t.id}" data-letter="${t.letter}">Tank ${t.letter}${t.description ? ' — ' + t.description : ''}</option>`).join('');
+
   setContent(`
     <div class="section-label">Live scribe — record auction results</div>
     <div class="card">
       <div class="card-header"><div class="card-header-title">Record a sale</div></div>
       <div class="card-body">
-        <div class="form-group"><label>Fish ID (e.g. A1, B3)</label><input id="s-fish-id" type="text" placeholder="Tank letter + fish number" /></div>
-        <div class="form-group"><label>Bidder #</label><input id="s-bidder" type="number" placeholder="Bidder number" /></div>
-        <div class="form-group"><label>Sale price ($)</label><input id="s-price" type="number" placeholder="0.00" min="0.01" step="0.01" onkeydown="if(event.key==='Enter') recordSale()" /></div>
-        <button class="btn btn-primary" id="scribe-btn" style="width:100%;justify-content:center;" onclick="recordSale()">✓ Record sale</button>
-        <div id="scribe-msg"></div>
+        <div class="form-group">
+          <label>Select tank</label>
+          <select id="s-tank" onchange="loadScribeFishDropdown()">
+            <option value="">— Select a tank —</option>
+            ${tankOptions}
+          </select>
+        </div>
+        <div class="form-group" id="s-fish-group" style="display:none;">
+          <label>Select fish</label>
+          <select id="s-fish-select"></select>
+        </div>
+        <div id="s-entry-fields" style="display:none;">
+          <div class="form-group">
+            <label>Bidder #</label>
+            <div style="display:flex;align-items:center;gap:10px;">
+              <input id="s-bidder" type="number" placeholder="Bidder number" style="width:140px;" />
+              <span id="s-bidder-name" class="bidder-name-display"></span>
+            </div>
+          </div>
+          <div class="form-group"><label>Sale price ($)</label><input id="s-price" type="number" placeholder="0.00" min="0.01" step="0.01" onkeydown="if(event.key==='Enter') recordSale()" /></div>
+          <button class="btn btn-primary" id="scribe-btn" style="width:100%;justify-content:center;" onclick="recordSale()">✓ Record sale</button>
+          <div id="scribe-msg"></div>
+        </div>
       </div>
     </div>
     <div class="card">
       <div class="card-header"><div class="card-header-title">Sales log</div></div>
       <div class="card-body">
-        ${sales && sales.length > 0 ? `
+        <div class="sort-bar">
+          <label>Sort by:</label>
+          <select onchange="setScribeSort(this.value)">
+            <option value="recency" ${scribeSortOrder === 'recency' ? 'selected' : ''}>Most recent</option>
+            <option value="tank" ${scribeSortOrder === 'tank' ? 'selected' : ''}>Tank</option>
+            <option value="bidder" ${scribeSortOrder === 'bidder' ? 'selected' : ''}>Bidder</option>
+            <option value="donor" ${scribeSortOrder === 'donor' ? 'selected' : ''}>Donor</option>
+          </select>
+        </div>
+        ${sortedSales.length > 0 ? `
         <table class="table">
-          <thead><tr><th>Fish</th><th>Description</th><th>Bidder</th><th style="text-align:right;">Price</th><th>Delete</th></tr></thead>
+          <thead><tr><th>Fish</th><th>Description</th><th>Bidder</th><th style="text-align:right;">Price</th><th>Actions</th></tr></thead>
           <tbody>
-            ${sales.map(s => `
+            ${sortedSales.map(s => `
               <tr>
                 <td><span class="fish-id">${s.fish?.tanks?.letter || '?'}${s.fish?.fish_number || '?'}</span></td>
                 <td>${s.fish?.description || '—'}</td>
                 <td>#${s.bidders?.bidder_number} ${s.bidders?.last_name || ''}</td>
                 <td style="text-align:right;font-weight:bold;">$${s.sale_price}</td>
-                <td><button class="btn btn-danger btn-xs" onclick="deleteSale('${s.id}')">Delete</button></td>
+                <td style="display:flex;gap:4px;">
+                  <button class="btn btn-warning btn-xs" onclick="openEditSaleModal('${s.id}','${s.fish?.tanks?.letter || ''}${s.fish?.fish_number || ''}',${s.bidders?.bidder_number || 0},${s.sale_price})">Edit</button>
+                  <button class="btn btn-danger btn-xs" onclick="deleteSale('${s.id}')">Delete</button>
+                </td>
               </tr>
             `).join('')}
           </tbody>
         </table>` : '<div class="empty-state">No sales recorded yet.</div>'}
       </div>
     </div>
+
+    <div class="modal-overlay" id="edit-sale-modal">
+      <div class="modal">
+        <div class="modal-title">Edit sale</div>
+        <input type="hidden" id="es-id" />
+        <div class="form-group"><label>Fish ID</label><input id="es-fish" type="text" readonly style="background:#f0f9fc;" /></div>
+        <div class="form-group">
+          <label>Bidder #</label>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <input id="es-bidder" type="number" style="width:140px;" />
+            <span id="es-bidder-name" class="bidder-name-display"></span>
+          </div>
+        </div>
+        <div class="form-group"><label>Sale price ($)</label><input id="es-price" type="number" min="0.01" step="0.01" /></div>
+        <div class="modal-actions">
+          <button class="btn btn-outline btn-sm" onclick="closeModal('edit-sale-modal')">Cancel</button>
+          <button class="btn btn-primary btn-sm" onclick="saveEditSale()">Save</button>
+        </div>
+      </div>
+    </div>
   `);
+
+  attachBidderLookup('s-bidder', 's-bidder-name');
+  attachBidderLookup('es-bidder', 'es-bidder-name');
+}
+
+async function loadScribeFishDropdown() {
+  const tankSelect = document.getElementById('s-tank');
+  const tankId = tankSelect.value;
+  if (!tankId) {
+    document.getElementById('s-fish-group').style.display = 'none';
+    document.getElementById('s-entry-fields').style.display = 'none';
+    return;
+  }
+
+  const { data: fish } = await sb.from('fish')
+    .select('id, fish_number, description, sales(id)')
+    .eq('tank_id', tankId)
+    .order('fish_number');
+
+  const availableFish = (fish || []).filter(f => !f.sales || f.sales.length === 0);
+
+  const fishSelect = document.getElementById('s-fish-select');
+  if (availableFish.length === 0) {
+    fishSelect.innerHTML = '<option value="">No available fish in this tank</option>';
+    document.getElementById('s-entry-fields').style.display = 'none';
+  } else {
+    fishSelect.innerHTML = '<option value="">— Select a fish —</option>' +
+      availableFish.map(f => `<option value="${f.id}">${tankSelect.options[tankSelect.selectedIndex].dataset.letter}${f.fish_number} — ${f.description}</option>`).join('');
+    fishSelect.onchange = () => {
+      document.getElementById('s-entry-fields').style.display = fishSelect.value ? 'block' : 'none';
+    };
+  }
+  document.getElementById('s-fish-group').style.display = 'block';
+}
+
+function setScribeSort(order) {
+  scribeSortOrder = order;
+  renderScribe();
+}
+
+function openEditSaleModal(id, fishLabel, bidderNum, price) {
+  document.getElementById('es-id').value = id;
+  document.getElementById('es-fish').value = fishLabel;
+  document.getElementById('es-bidder').value = bidderNum;
+  document.getElementById('es-price').value = price;
+  const name = bidderCache[bidderNum];
+  const display = document.getElementById('es-bidder-name');
+  if (display) {
+    display.textContent = name || 'Not found';
+    display.className = 'bidder-name-display' + (name ? '' : ' not-found');
+  }
+  document.getElementById('edit-sale-modal').classList.add('open');
+}
+
+async function saveEditSale() {
+  const id = document.getElementById('es-id').value;
+  const bidderNum = parseInt(document.getElementById('es-bidder').value);
+  const salePrice = parseFloat(document.getElementById('es-price').value);
+  if (!bidderNum || !salePrice || salePrice <= 0) { alert('Please fill in all fields with valid values.'); return; }
+  const { data: bidderData } = await sb.from('bidders').select('id').eq('bidder_number', bidderNum).eq('year_id', appSettings.activeYearId).single();
+  if (!bidderData) { alert('Bidder not found.'); return; }
+  const { error } = await sb.from('sales').update({ bidder_id: bidderData.id, sale_price: salePrice }).eq('id', id);
+  if (error) { alert('Error: ' + error.message); return; }
+  closeModal('edit-sale-modal');
+  renderScribe();
 }
 
 async function recordSale() {
-  const fishIdInput = document.getElementById('s-fish-id').value.trim().toUpperCase();
+  const tankSelect = document.getElementById('s-tank');
+  const fishSelect = document.getElementById('s-fish-select');
   const bidderNum = parseInt(document.getElementById('s-bidder').value);
   const salePrice = parseFloat(document.getElementById('s-price').value);
   const msg = document.getElementById('scribe-msg');
   const btn = document.getElementById('scribe-btn');
 
-  if (!fishIdInput || !bidderNum || !salePrice) { msg.innerHTML = '<div class="alert alert-error">Please fill in all fields.</div>'; return; }
+  if (!tankSelect.value || !fishSelect.value || !bidderNum || !salePrice) {
+    msg.innerHTML = '<div class="alert alert-error">Please fill in all fields.</div>'; return;
+  }
   if (salePrice <= 0) { msg.innerHTML = '<div class="alert alert-error">Sale price must be greater than $0.</div>'; return; }
 
   btn.disabled = true;
   btn.textContent = 'Saving...';
 
-  const tankLetter = fishIdInput.charAt(0);
-  const fishNum = parseInt(fishIdInput.slice(1));
-
-  const { data: tankData } = await sb.from('tanks').select('id').eq('letter', tankLetter).eq('year_id', appSettings.activeYearId).single();
-  if (!tankData) { msg.innerHTML = '<div class="alert alert-error">Tank not found.</div>'; btn.disabled = false; btn.textContent = '✓ Record sale'; return; }
-
-  const { data: fishData } = await sb.from('fish').select('id').eq('tank_id', tankData.id).eq('fish_number', fishNum).single();
-  if (!fishData) { msg.innerHTML = '<div class="alert alert-error">Fish not found.</div>'; btn.disabled = false; btn.textContent = '✓ Record sale'; return; }
-
-  const { data: existingSale } = await sb.from('sales').select('id').eq('fish_id', fishData.id);
-  if (existingSale && existingSale.length > 0) { msg.innerHTML = '<div class="alert alert-error">This fish has already been sold!</div>'; btn.disabled = false; btn.textContent = '✓ Record sale'; return; }
+  const fishId = fishSelect.value;
+  const { data: existingSale } = await sb.from('sales').select('id').eq('fish_id', fishId);
+  if (existingSale && existingSale.length > 0) {
+    msg.innerHTML = '<div class="alert alert-error">This fish has already been sold!</div>';
+    btn.disabled = false; btn.textContent = '✓ Record sale'; return;
+  }
 
   const { data: bidderData } = await sb.from('bidders').select('id').eq('bidder_number', bidderNum).eq('year_id', appSettings.activeYearId).single();
-  if (!bidderData) { msg.innerHTML = '<div class="alert alert-error">Bidder not found.</div>'; btn.disabled = false; btn.textContent = '✓ Record sale'; return; }
+  if (!bidderData) {
+    msg.innerHTML = '<div class="alert alert-error">Bidder not found.</div>';
+    btn.disabled = false; btn.textContent = '✓ Record sale'; return;
+  }
 
-  const { error } = await sb.from('sales').insert({ fish_id: fishData.id, bidder_id: bidderData.id, sale_price: salePrice, year_id: appSettings.activeYearId });
-  if (error) { msg.innerHTML = '<div class="alert alert-error">Error: ' + error.message + '</div>'; btn.disabled = false; btn.textContent = '✓ Record sale'; return; }
+  const { error } = await sb.from('sales').insert({ fish_id: fishId, bidder_id: bidderData.id, sale_price: salePrice, year_id: appSettings.activeYearId });
+  if (error) {
+    msg.innerHTML = '<div class="alert alert-error">Error: ' + error.message + '</div>';
+    btn.disabled = false; btn.textContent = '✓ Record sale'; return;
+  }
 
   msg.innerHTML = '<div class="alert alert-success">Sale recorded!</div>';
-  document.getElementById('s-fish-id').value = '';
   document.getElementById('s-bidder').value = '';
   document.getElementById('s-price').value = '';
+  document.getElementById('s-bidder-name').textContent = '';
   btn.disabled = false;
   btn.textContent = '✓ Record sale';
+  await loadScribeFishDropdown();
   setTimeout(() => renderScribe(), 1000);
 }
 
@@ -728,18 +1046,45 @@ async function deleteSale(id) {
 // ============================================
 // CHECKOUT
 // ============================================
+let membershipShownForBidder = null;
+
 async function renderCheckout() {
   setContent(`
     <div class="section-label">Checkout</div>
     <div class="card">
       <div class="card-header"><div class="card-header-title">Look up bidder</div></div>
       <div class="card-body">
-        <div class="form-group"><label>Bidder #</label><input id="co-bidder-num" type="number" placeholder="Enter bidder number" /></div>
-        <button class="btn btn-primary" onclick="loadCheckout()">Look up</button>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;">
+          <div class="form-group" style="margin-bottom:0;flex:0 0 auto;">
+            <label>Bidder #</label>
+            <input id="co-bidder-num" type="number" placeholder="Enter bidder number" style="width:160px;" />
+          </div>
+          <div style="margin-top:18px;">
+            <span id="co-bidder-name-display" class="bidder-name-display"></span>
+          </div>
+        </div>
+        <button class="btn btn-primary" style="margin-top:8px;" onclick="loadCheckout()">Look up</button>
       </div>
     </div>
     <div id="checkout-result"></div>
+    <div class="modal-overlay" id="membership-modal">
+      <div class="modal">
+        <div class="modal-title">🏆 Add membership?</div>
+        <p style="font-size:13px;color:#444;margin-bottom:16px;">This bidder is not a club member. Would you like to add a membership to their purchase?</p>
+        <div class="form-group"><label>Membership type</label>
+          <select id="membership-type">
+            <option value="Family Membership">Family Membership — $15</option>
+            <option value="Individual Membership">Individual Membership — $10</option>
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-outline btn-sm" onclick="closeModal('membership-modal')">No thanks</button>
+          <button class="btn btn-primary btn-sm" onclick="addMembershipFromCheckout()">Yes, add it</button>
+        </div>
+      </div>
+    </div>
   `);
+  attachBidderLookup('co-bidder-num', 'co-bidder-name-display');
 }
 
 async function loadCheckout() {
@@ -747,6 +1092,12 @@ async function loadCheckout() {
   if (!bidderNum) { alert('Please enter a bidder number.'); return; }
   const { data: bidder } = await sb.from('bidders').select('*').eq('bidder_number', bidderNum).eq('year_id', appSettings.activeYearId).single();
   if (!bidder) { document.getElementById('checkout-result').innerHTML = '<div class="alert alert-error">Bidder not found.</div>'; return; }
+
+  if (!bidder.is_member && membershipShownForBidder !== bidder.id) {
+    membershipShownForBidder = bidder.id;
+    document.getElementById('membership-modal').dataset.bidderId = bidder.id;
+    document.getElementById('membership-modal').classList.add('open');
+  }
 
   const { data: sales } = await sb.from('sales').select('sale_price, fish(description, fish_number, tanks(letter))').eq('bidder_id', bidder.id);
   const { data: misc } = await sb.from('misc_purchases').select('*').eq('bidder_id', bidder.id);
@@ -757,7 +1108,6 @@ async function loadCheckout() {
   const grandTotal = auctionTotal + miscTotal;
   const totalPaid = (payments || []).reduce((s, r) => s + Number(r.amount), 0);
   const remaining = grandTotal - totalPaid;
-
   const isPaid = totalPaid >= grandTotal - 0.01;
   const isPartial = totalPaid > 0 && !isPaid;
 
@@ -848,34 +1198,34 @@ async function loadCheckout() {
   `;
 }
 
+async function addMembershipFromCheckout() {
+  const bidderId = document.getElementById('membership-modal').dataset.bidderId;
+  const selectedType = document.getElementById('membership-type').value;
+  const price = selectedType === 'Family Membership' ? 15 : 10;
+  await sb.from('misc_purchases').insert({
+    bidder_id: bidderId,
+    item_name: selectedType,
+    quantity: 1,
+    unit_price: price,
+    total_price: price,
+    year_id: appSettings.activeYearId,
+  });
+  closeModal('membership-modal');
+  loadCheckout();
+}
+
 async function recordPayment(bidderId, grandTotal) {
   const amount = parseFloat(document.getElementById('co-amount').value);
   const payment_method = document.getElementById('co-payment').value;
   const payment_reference = document.getElementById('co-ref').value.trim();
   const msg = document.getElementById('checkout-msg');
-
   if (!amount || amount <= 0) { msg.innerHTML = '<div class="alert alert-error">Please enter a valid payment amount.</div>'; return; }
-
-  const { error: paymentError } = await sb.from('payments').insert({
-    bidder_id: bidderId,
-    amount,
-    payment_method,
-    payment_reference,
-    year_id: appSettings.activeYearId,
-  });
+  const { error: paymentError } = await sb.from('payments').insert({ bidder_id: bidderId, amount, payment_method, payment_reference, year_id: appSettings.activeYearId });
   if (paymentError) { msg.innerHTML = '<div class="alert alert-error">Error: ' + paymentError.message + '</div>'; return; }
-
   const { data: allPayments } = await sb.from('payments').select('amount').eq('bidder_id', bidderId);
   const totalPaid = (allPayments || []).reduce((s, r) => s + Number(r.amount), 0);
   const isPaid = totalPaid >= grandTotal - 0.01;
-
-  await sb.from('bidders').update({
-    is_paid: isPaid,
-    payment_method,
-    payment_reference,
-    total_paid: totalPaid,
-  }).eq('id', bidderId);
-
+  await sb.from('bidders').update({ is_paid: isPaid, payment_method, payment_reference, total_paid: totalPaid }).eq('id', bidderId);
   msg.innerHTML = '<div class="alert alert-success">Payment recorded!</div>';
   setTimeout(() => loadCheckout(), 1000);
 }
@@ -885,13 +1235,11 @@ async function printReceipt(bidderId) {
   const { data: sales } = await sb.from('sales').select('sale_price, fish(description, fish_number, tanks(letter))').eq('bidder_id', bidderId);
   const { data: misc } = await sb.from('misc_purchases').select('*').eq('bidder_id', bidderId);
   const { data: payments } = await sb.from('payments').select('*').eq('bidder_id', bidderId).order('created_at');
-
   const auctionTotal = (sales || []).reduce((s, r) => s + Number(r.sale_price), 0);
   const miscTotal = (misc || []).reduce((s, r) => s + Number(r.total_price), 0);
   const grandTotal = auctionTotal + miscTotal;
   const totalPaid = (payments || []).reduce((s, r) => s + Number(r.amount), 0);
   const remaining = grandTotal - totalPaid;
-
   const printArea = document.getElementById('print-area');
   printArea.innerHTML = `
     <div class="receipt">
@@ -901,22 +1249,14 @@ async function printReceipt(bidderId) {
         <p>${appSettings.auctionTitle}</p>
         <p>Bidder #${bidder.bidder_number} — ${bidder.first_name} ${bidder.last_name}</p>
       </div>
-
       ${sales && sales.length > 0 ? `
       <p style="font-weight:bold;font-size:13px;margin:12px 0 6px;">Auction fish</p>
       <table class="receipt-table">
         <thead><tr><th>Fish</th><th>Description</th><th style="text-align:right;">Price</th></tr></thead>
         <tbody>
-          ${sales.map(s => `
-            <tr>
-              <td>${s.fish?.tanks?.letter || ''}${s.fish?.fish_number || ''}</td>
-              <td>${s.fish?.description || ''}</td>
-              <td style="text-align:right;">$${s.sale_price}</td>
-            </tr>
-          `).join('')}
+          ${sales.map(s => `<tr><td>${s.fish?.tanks?.letter || ''}${s.fish?.fish_number || ''}</td><td>${s.fish?.description || ''}</td><td style="text-align:right;">$${s.sale_price}</td></tr>`).join('')}
         </tbody>
       </table>` : ''}
-
       ${misc && misc.length > 0 ? `
       <p style="font-weight:bold;font-size:13px;margin:12px 0 6px;">Misc purchases</p>
       <table class="receipt-table">
@@ -925,34 +1265,25 @@ async function printReceipt(bidderId) {
           ${misc.map(m => `<tr><td>${m.item_name}</td><td>${m.quantity}</td><td style="text-align:right;">$${m.total_price}</td></tr>`).join('')}
         </tbody>
       </table>` : ''}
-
       <div class="receipt-total">Grand total: $${grandTotal.toFixed(2)}</div>
-
       ${payments && payments.length > 0 ? `
       <p style="font-weight:bold;font-size:13px;margin:12px 0 6px;">Payment history</p>
       <table class="receipt-table">
         <thead><tr><th>Method</th><th>Reference</th><th>Date</th><th style="text-align:right;">Amount</th></tr></thead>
         <tbody>
-          ${payments.map(p => `
-            <tr>
-              <td>${p.payment_method || '—'}</td>
-              <td>${p.payment_reference || '—'}</td>
-              <td>${p.created_at ? new Date(p.created_at).toLocaleDateString() : ''}</td>
-              <td style="text-align:right;">$${Number(p.amount).toFixed(2)}</td>
-            </tr>
-          `).join('')}
+          ${payments.map(p => `<tr><td>${p.payment_method || '—'}</td><td>${p.payment_reference || '—'}</td><td>${p.created_at ? new Date(p.created_at).toLocaleDateString() : ''}</td><td style="text-align:right;">$${Number(p.amount).toFixed(2)}</td></tr>`).join('')}
         </tbody>
       </table>
       <div style="text-align:right;font-size:13px;margin-top:6px;">
         Total paid: $${totalPaid.toFixed(2)}<br/>
         ${remaining > 0.01 ? `<strong style="color:#c0392b;">Remaining: $${remaining.toFixed(2)}</strong>` : '<strong style="color:#0a6640;">Paid in full</strong>'}
       </div>` : ''}
-
       <div class="receipt-footer">Thank you for supporting the Pikes Peak Koi & Water Garden Society!</div>
     </div>
   `;
   window.print();
 }
+
 // ============================================
 // MISC PURCHASES
 // ============================================
@@ -962,18 +1293,31 @@ async function renderMisc() {
     sb.from('misc_items').select('*').eq('year_id', appSettings.activeYearId).order('name'),
     sb.from('misc_purchases').select('*, bidders(first_name, last_name, bidder_number)').eq('year_id', appSettings.activeYearId).order('created_at', { ascending: false }),
   ]);
+
+  const selectedItem = items && items.length > 0 ? items[0] : null;
+  const isQtyBased = selectedItem ? selectedItem.is_quantity_based : true;
+
   setContent(`
     <div class="section-label">Miscellaneous purchases</div>
     <div class="card">
       <div class="card-header"><div class="card-header-title">Add purchase</div></div>
       <div class="card-body">
-        <div class="form-group"><label>Bidder #</label><input id="m-bidder" type="number" placeholder="Bidder number" /></div>
+        <div class="form-group">
+          <label>Bidder #</label>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <input id="m-bidder" type="number" placeholder="Bidder number" style="width:140px;" />
+            <span id="m-bidder-name" class="bidder-name-display"></span>
+          </div>
+        </div>
         <div class="form-group"><label>Item</label>
-          <select id="m-item">
-            ${(items || []).map(i => `<option value="${i.id}" data-price="${i.unit_price}">${i.name} — $${i.unit_price}</option>`).join('')}
+          <select id="m-item" onchange="updateMiscQtyLabel()">
+            ${(items || []).map(i => `<option value="${i.id}" data-price="${i.unit_price}" data-qty-based="${i.is_quantity_based}">${i.name} — $${i.unit_price}</option>`).join('')}
           </select>
         </div>
-        <div class="form-group"><label>Quantity / Amount</label><input id="m-qty" type="number" value="1" min="1" step="1" /></div>
+        <div class="form-group">
+          <label id="m-qty-label">${isQtyBased ? 'Quantity' : 'Amount ($)'}</label>
+          <input id="m-qty" type="number" value="1" min="${isQtyBased ? '1' : '0.01'}" step="${isQtyBased ? '1' : '0.01'}" />
+        </div>
         <button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="saveMiscPurchase()">+ Add purchase</button>
         <div id="misc-msg"></div>
       </div>
@@ -1015,6 +1359,22 @@ async function renderMisc() {
       </div>
     </div>
   `);
+  attachBidderLookup('m-bidder', 'm-bidder-name');
+}
+
+function updateMiscQtyLabel() {
+  const select = document.getElementById('m-item');
+  if (!select) return;
+  const opt = select.options[select.selectedIndex];
+  const isQtyBased = opt.dataset.qtyBased === 'true';
+  const label = document.getElementById('m-qty-label');
+  const input = document.getElementById('m-qty');
+  if (label) label.textContent = isQtyBased ? 'Quantity' : 'Amount ($)';
+  if (input) {
+    input.min = isQtyBased ? '1' : '0.01';
+    input.step = isQtyBased ? '1' : '0.01';
+    input.value = isQtyBased ? '1' : '';
+  }
 }
 
 function openEditMiscModal(p) {
@@ -1030,7 +1390,7 @@ async function saveEditMisc() {
   const item_name = document.getElementById('me-name').value.trim();
   const quantity = parseFloat(document.getElementById('me-qty').value);
   const unit_price = parseFloat(document.getElementById('me-price').value);
-  if (quantity < 1) { alert('Quantity must be at least 1.'); return; }
+  if (quantity <= 0) { alert('Quantity/amount must be greater than 0.'); return; }
   if (unit_price <= 0) { alert('Price must be greater than $0.'); return; }
   const total_price = quantity * unit_price;
   const { error } = await sb.from('misc_purchases').update({ item_name, quantity, unit_price, total_price }).eq('id', id);
@@ -1051,12 +1411,24 @@ async function saveMiscPurchase() {
   const select = document.getElementById('m-item');
   const selectedOption = select.options[select.selectedIndex];
   const item_name = selectedOption.text.split(' — ')[0];
-  const unit_price = parseFloat(selectedOption.dataset.price);
-  const quantity = parseFloat(document.getElementById('m-qty').value) || 1;
+  const isQtyBased = selectedOption.dataset.qtyBased === 'true';
+  const qtyVal = parseFloat(document.getElementById('m-qty').value);
   const msg = document.getElementById('misc-msg');
-  if (quantity < 1) { msg.innerHTML = '<div class="alert alert-error">Quantity must be at least 1.</div>'; return; }
-  const total_price = unit_price * quantity;
+
   if (!bidderNum) { msg.innerHTML = '<div class="alert alert-error">Please enter a bidder number.</div>'; return; }
+  if (!qtyVal || qtyVal <= 0) { msg.innerHTML = '<div class="alert alert-error">Please enter a valid quantity or amount.</div>'; return; }
+
+  let unit_price, quantity, total_price;
+  if (isQtyBased) {
+    unit_price = parseFloat(selectedOption.dataset.price);
+    quantity = qtyVal;
+    total_price = unit_price * quantity;
+  } else {
+    unit_price = 1;
+    quantity = qtyVal;
+    total_price = qtyVal;
+  }
+
   const { data: bidder } = await sb.from('bidders').select('id').eq('bidder_number', bidderNum).eq('year_id', appSettings.activeYearId).single();
   if (!bidder) { msg.innerHTML = '<div class="alert alert-error">Bidder not found.</div>'; return; }
   const { error } = await sb.from('misc_purchases').insert({ bidder_id: bidder.id, item_name, quantity, unit_price, total_price, year_id: appSettings.activeYearId });
@@ -1102,7 +1474,11 @@ async function renderAdminPanel() {
 
   const yearsHtml = (years || []).map(y => {
     const isActive = y.id === appSettings.activeYearId;
-    return `<div class="year-pill ${isActive ? 'active' : ''}" onclick="switchYear('${y.id}')">${y.year} ${isActive ? '★ Active' : ''}</div>`;
+    return `
+      <div style="display:flex;align-items:center;gap:8px;margin:4px 0;">
+        <div class="year-pill ${isActive ? 'active' : ''}" onclick="switchYear('${y.id}')">${y.year} ${isActive ? '★ Active' : ''}</div>
+        ${!isActive ? `<button class="btn btn-danger btn-xs" onclick="deleteYear('${y.id}', ${y.year})">Delete</button>` : ''}
+      </div>`;
   }).join('');
 
   const miscItemsHtml = miscItems && miscItems.length > 0
@@ -1113,7 +1489,7 @@ async function renderAdminPanel() {
             <tr>
               <td>${i.name}</td>
               <td>$${Number(i.unit_price).toFixed(2)}</td>
-              <td>${i.is_quantity_based ? 'Qty based' : 'Fixed'}</td>
+              <td>${i.is_quantity_based ? 'Qty based' : 'Fixed amount'}</td>
               <td>
                 <button class="btn btn-warning btn-xs" onclick='openEditMiscItemModal(${JSON.stringify(i)})'>Edit</button>
                 <button class="btn btn-danger btn-xs" onclick="deleteMiscItem('${i.id}')">Delete</button>
@@ -1151,8 +1527,8 @@ async function renderAdminPanel() {
     <div class="card">
       <div class="card-header"><div class="card-header-title">Auction years</div></div>
       <div class="card-body">
-        <p style="font-size:13px;color:#666;margin-bottom:12px;">Select which year you are currently working on.</p>
-        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px;">${yearsHtml}</div>
+        <p style="font-size:13px;color:#666;margin-bottom:12px;">Click a year to switch to it. Delete button only appears on inactive years.</p>
+        <div style="margin-bottom:16px;">${yearsHtml}</div>
         <hr class="divider">
         <p style="font-size:13px;font-weight:bold;color:#0d3d52;margin-bottom:10px;">Create new auction year</p>
         <div class="form-group"><label>Year</label><input id="new-year" type="number" value="${new Date().getFullYear() + 1}" /></div>
@@ -1231,7 +1607,7 @@ async function renderAdminPanel() {
         <div class="form-group"><label>Type</label>
           <select id="mi-qty">
             <option value="true">Quantity based (price × qty)</option>
-            <option value="false">Fixed amount</option>
+            <option value="false">Fixed amount (enter $ as quantity)</option>
           </select>
         </div>
         <div class="modal-actions">
@@ -1240,7 +1616,53 @@ async function renderAdminPanel() {
         </div>
       </div>
     </div>
+
+    <div class="modal-overlay" id="delete-year-modal">
+      <div class="modal">
+        <div class="modal-title" style="color:#c0392b;">⚠️ Delete auction year</div>
+        <p style="font-size:13px;color:#444;margin-bottom:12px;" id="delete-year-warning"></p>
+        <div class="danger-zone">
+          <h3>This will permanently delete ALL data for this year including donors, fish, bidders, sales, and purchases. This cannot be undone.</h3>
+        </div>
+        <div class="form-group" style="margin-top:14px;"><label>Type the year to confirm</label><input id="delete-year-confirm" type="text" placeholder="e.g. 2025" /></div>
+        <div class="modal-actions">
+          <button class="btn btn-outline btn-sm" onclick="closeModal('delete-year-modal')">Cancel</button>
+          <button class="btn btn-danger btn-sm" onclick="confirmDeleteYear()">Permanently delete year</button>
+        </div>
+      </div>
+    </div>
   `);
+}
+
+let yearToDelete = null;
+
+function deleteYear(yearId, yearNum) {
+  yearToDelete = { id: yearId, year: yearNum };
+  document.getElementById('delete-year-warning').textContent = `You are about to delete all data for the ${yearNum} auction year.`;
+  document.getElementById('delete-year-confirm').value = '';
+  document.getElementById('delete-year-modal').classList.add('open');
+}
+
+async function confirmDeleteYear() {
+  const input = document.getElementById('delete-year-confirm').value.trim();
+  if (input !== String(yearToDelete.year)) {
+    alert(`Please type ${yearToDelete.year} exactly to confirm.`); return;
+  }
+  const yId = yearToDelete.id;
+  await sb.from('sales').delete().eq('year_id', yId);
+  await sb.from('misc_purchases').delete().eq('year_id', yId);
+  await sb.from('payments').delete().eq('year_id', yId);
+  await sb.from('fish').delete().eq('year_id', yId);
+  await sb.from('tanks').delete().eq('year_id', yId);
+  await sb.from('donors').delete().eq('year_id', yId);
+  await sb.from('bidders').delete().eq('year_id', yId);
+  await sb.from('misc_items').delete().eq('year_id', yId);
+  await sb.from('donor_types').delete().eq('year_id', yId);
+  await sb.from('settings').delete().eq('id', yId);
+  yearToDelete = null;
+  closeModal('delete-year-modal');
+  alert('Year deleted successfully.');
+  renderAdminPanel();
 }
 
 function openDonorTypeModal() {
@@ -1266,22 +1688,11 @@ async function saveDonorType() {
   if (!name || isNaN(percentInput)) { alert('Please fill in type name and percentage.'); return; }
   if (percentInput < 0 || percentInput > 100) { alert('Percentage must be between 0 and 100.'); return; }
   const percentage = percentInput / 100;
-
   if (id) {
     const { error } = await sb.from('donor_types').update({ name, percentage }).eq('id', id);
     if (error) { alert('Error: ' + error.message); return; }
     const { data: linkedFish } = await sb.from('fish').select('id').eq('year_id', appSettings.activeYearId).eq('type', name);
-    if (linkedFish && linkedFish.length > 0) {
-      for (const f of linkedFish) {
-        await sb.from('fish').update({ donor_percent: percentage }).eq('id', f.id);
-      }
-    }
-    const { data: linkedDonors } = await sb.from('donors').select('id').eq('year_id', appSettings.activeYearId).eq('type', name);
-    if (linkedDonors && linkedDonors.length > 0) {
-      for (const d of linkedDonors) {
-        await sb.from('donors').update({ type: name }).eq('id', d.id);
-      }
-    }
+    for (const f of (linkedFish || [])) { await sb.from('fish').update({ donor_percent: percentage }).eq('id', f.id); }
   } else {
     const { error } = await sb.from('donor_types').insert({ name, percentage, year_id: appSettings.activeYearId });
     if (error) { alert('Error: ' + error.message); return; }
@@ -1295,13 +1706,9 @@ async function deleteDonorType(id) {
   const { data: linkedFish } = await sb.from('fish').select('id').eq('year_id', appSettings.activeYearId).eq('type', dt?.name);
   const { data: linkedDonors } = await sb.from('donors').select('id').eq('year_id', appSettings.activeYearId).eq('type', dt?.name);
   const totalLinked = (linkedFish?.length || 0) + (linkedDonors?.length || 0);
-  if (totalLinked > 0) {
-    alert(`Cannot delete "${dt?.name}" — it is used by ${linkedDonors?.length || 0} donor(s) and ${linkedFish?.length || 0} fish. Please reassign them first.`);
-    return;
-  }
-  if (!window.confirm(`Delete the "${dt?.name}" donor type? This cannot be undone.`)) return;
-  const { error } = await sb.from('donor_types').delete().eq('id', id);
-  if (error) { alert('Error: ' + error.message); return; }
+  if (totalLinked > 0) { alert(`Cannot delete "${dt?.name}" — it is used by ${linkedDonors?.length || 0} donor(s) and ${linkedFish?.length || 0} fish.`); return; }
+  if (!window.confirm(`Delete the "${dt?.name}" donor type?`)) return;
+  await sb.from('donor_types').delete().eq('id', id);
   renderAdminPanel();
 }
 
@@ -1341,31 +1748,25 @@ async function saveMiscItem() {
 }
 
 async function deleteMiscItem(id) {
-  if (!window.confirm('Delete this item from the price list? This cannot be undone.')) return;
-  const { error } = await sb.from('misc_items').delete().eq('id', id);
-  if (error) { alert('Error: ' + error.message); return; }
+  if (!window.confirm('Delete this item from the price list?')) return;
+  await sb.from('misc_items').delete().eq('id', id);
   renderAdminPanel();
 }
 
 async function switchYear(yearId) {
-  if (yearId === appSettings.activeYearId) {
-    alert('This year is already active.');
-    return;
-  }
+  if (yearId === appSettings.activeYearId) { alert('This year is already active.'); return; }
   const { data } = await sb.from('settings').select('*').eq('id', yearId).single();
   if (!data) return;
   const confirmed = window.confirm(`Switch to the ${data.year} auction year? This will update for all devices.`);
   if (!confirmed) return;
-
   await sb.from('settings').update({ is_active: false }).neq('id', yearId);
   await sb.from('settings').update({ is_active: true }).eq('id', yearId);
-
   appSettings.activeYearId = data.id;
   appSettings.auctionYear = data.year;
   appSettings.auctionTitle = data.title;
   appSettings.adminPassword = data.admin_password || 'admin1234';
   document.getElementById('auction-subtitle').textContent = data.title;
-
+  await loadBidderCache();
   const activePage = getActivePage();
   loadPage(activePage);
   renderAdminPanel();
@@ -1376,37 +1777,22 @@ async function createNewYear() {
   if (!year) { alert('Please enter a valid year.'); return; }
   if (!window.confirm(`Create a new auction year for ${year}? This will become the active year.`)) return;
   const title = `${year} Re-Homing Auction`;
-
-  const { data, error } = await sb.from('settings').insert({
-    year, title, admin_password: appSettings.adminPassword, is_active: true
-  }).select().single();
+  const { data, error } = await sb.from('settings').insert({ year, title, admin_password: appSettings.adminPassword, is_active: true }).select().single();
   if (error) { alert('Error: ' + error.message); return; }
-
   await sb.from('settings').update({ is_active: false }).neq('id', data.id);
-
   const { data: prevMiscItems } = await sb.from('misc_items').select('*').eq('year_id', appSettings.activeYearId);
   for (const item of (prevMiscItems || [])) {
-    await sb.from('misc_items').insert({
-      name: item.name,
-      unit_price: item.unit_price,
-      is_quantity_based: item.is_quantity_based,
-      year_id: data.id,
-    });
+    await sb.from('misc_items').insert({ name: item.name, unit_price: item.unit_price, is_quantity_based: item.is_quantity_based, year_id: data.id });
   }
-
   const { data: prevDonorTypes } = await sb.from('donor_types').select('*').eq('year_id', appSettings.activeYearId);
   for (const dt of (prevDonorTypes || [])) {
-    await sb.from('donor_types').insert({
-      name: dt.name,
-      percentage: dt.percentage,
-      year_id: data.id,
-    });
+    await sb.from('donor_types').insert({ name: dt.name, percentage: dt.percentage, year_id: data.id });
   }
-
   appSettings.activeYearId = data.id;
   appSettings.auctionYear = data.year;
   appSettings.auctionTitle = data.title;
   document.getElementById('auction-subtitle').textContent = data.title;
+  await loadBidderCache();
   alert(`${year} auction year created! Misc items and donor types copied from previous year.`);
   renderAdminPanel();
 }
@@ -1427,72 +1813,26 @@ async function changePassword() {
 
 async function exportCSV(table) {
   const XLSX = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm');
-
-  const teal = 'FF1a5f7a';
-  const lightTeal = 'FFe8f4f8';
-  const navy = 'FF0d3d52';
-  const white = 'FFFFFFFF';
-  const amber = 'FFfef5e0';
-  const red = 'FFfdecea';
-  const green = 'FFe0f9f0';
+  const teal = 'FF1a5f7a'; const lightTeal = 'FFe8f4f8'; const navy = 'FF0d3d52';
+  const white = 'FFFFFFFF'; const amber = 'FFfef5e0'; const green = 'FFe0f9f0';
 
   function headerStyle(bg) {
-    return {
-      fill: { fgColor: { rgb: bg || teal } },
-      font: { bold: true, color: { rgb: white }, sz: 11 },
-      alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
-      border: {
-        bottom: { style: 'thin', color: { rgb: navy } },
-        right: { style: 'thin', color: { rgb: navy } },
-      }
-    };
+    return { fill: { fgColor: { rgb: bg || teal } }, font: { bold: true, color: { rgb: white }, sz: 11 }, alignment: { horizontal: 'center', vertical: 'center', wrapText: true }, border: { bottom: { style: 'thin', color: { rgb: navy } }, right: { style: 'thin', color: { rgb: navy } } } };
   }
-
   function cellStyle(bg, bold, align) {
-    return {
-      fill: { fgColor: { rgb: bg || white } },
-      font: { bold: !!bold, sz: 10 },
-      alignment: { horizontal: align || 'left', vertical: 'center' },
-      border: {
-        bottom: { style: 'hair', color: { rgb: 'FFCCCCCC' } },
-        right: { style: 'hair', color: { rgb: 'FFCCCCCC' } },
-      }
-    };
+    return { fill: { fgColor: { rgb: bg || white } }, font: { bold: !!bold, sz: 10 }, alignment: { horizontal: align || 'left', vertical: 'center' }, border: { bottom: { style: 'hair', color: { rgb: 'FFCCCCCC' } }, right: { style: 'hair', color: { rgb: 'FFCCCCCC' } } } };
   }
-
-  function titleStyle() {
-    return {
-      fill: { fgColor: { rgb: navy } },
-      font: { bold: true, color: { rgb: white }, sz: 14 },
-      alignment: { horizontal: 'left', vertical: 'center' },
-    };
-  }
-
-  function subTitleStyle() {
-    return {
-      fill: { fgColor: { rgb: lightTeal } },
-      font: { bold: false, color: { rgb: navy }, sz: 10 },
-      alignment: { horizontal: 'left', vertical: 'center' },
-    };
-  }
-
+  function titleStyle() { return { fill: { fgColor: { rgb: navy } }, font: { bold: true, color: { rgb: white }, sz: 14 }, alignment: { horizontal: 'left', vertical: 'center' } }; }
+  function subTitleStyle() { return { fill: { fgColor: { rgb: lightTeal } }, font: { bold: false, color: { rgb: navy }, sz: 10 }, alignment: { horizontal: 'left', vertical: 'center' } }; }
   function addTitleRows(ws, data, title, subtitle, numCols) {
     const merge = (r) => ({ s: { r, c: 0 }, e: { r, c: numCols - 1 } });
     if (!ws['!merges']) ws['!merges'] = [];
     ws['!merges'].push(merge(0), merge(1));
-
     XLSX.utils.sheet_add_aoa(ws, [[title], [subtitle]], { origin: 'A1' });
-    ws['A1'].s = titleStyle();
-    ws['A2'].s = subTitleStyle();
+    ws['A1'].s = titleStyle(); ws['A2'].s = subTitleStyle();
   }
-
-  function setColWidths(ws, widths) {
-    ws['!cols'] = widths.map(w => ({ wch: w }));
-  }
-
-  function makeCell(value, style) {
-    return { v: value, s: style, t: typeof value === 'number' ? 'n' : 's' };
-  }
+  function setColWidths(ws, widths) { ws['!cols'] = widths.map(w => ({ wch: w })); }
+  function makeCell(value, style) { return { v: value, s: style, t: typeof value === 'number' ? 'n' : 's' }; }
 
   const wb = XLSX.utils.book_new();
   const title = 'Pikes Peak Koi & Water Garden Society';
@@ -1503,24 +1843,15 @@ async function exportCSV(table) {
     const ws = XLSX.utils.aoa_to_sheet([]);
     const numCols = 6;
     addTitleRows(ws, data, title, subtitle, numCols);
-
     const headers = ['First Name', 'Last Name', 'Phone', 'Email', 'Type', '# Fish'];
     XLSX.utils.sheet_add_aoa(ws, [headers], { origin: 'A3' });
-    'ABCDEF'.split('').forEach((col, i) => {
-      ws[`${col}3`] = makeCell(headers[i], headerStyle());
-    });
-
+    'ABCDEF'.split('').forEach((col, i) => { ws[`${col}3`] = makeCell(headers[i], headerStyle()); });
     (data || []).forEach((d, i) => {
       const row = [d.first_name, d.last_name, d.phone || '', d.email || '', d.type, d.num_fish];
-      const r = 3 + i;
-      const bg = i % 2 === 0 ? white : lightTeal;
+      const r = 3 + i; const bg = i % 2 === 0 ? white : lightTeal;
       XLSX.utils.sheet_add_aoa(ws, [row], { origin: { r, c: 0 } });
-      row.forEach((_, ci) => {
-        const addr = XLSX.utils.encode_cell({ r, c: ci });
-        ws[addr].s = cellStyle(bg, false, ci === 5 ? 'center' : 'left');
-      });
+      row.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r, c: ci }); ws[addr].s = cellStyle(bg, false, ci === 5 ? 'center' : 'left'); });
     });
-
     ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: 3 + (data || []).length, c: numCols - 1 } });
     setColWidths(ws, [15, 15, 15, 25, 12, 8]);
     ws['!rows'] = [{ hpt: 22 }, { hpt: 16 }];
@@ -1532,32 +1863,16 @@ async function exportCSV(table) {
     const ws = XLSX.utils.aoa_to_sheet([]);
     const numCols = 6;
     addTitleRows(ws, data, title, subtitle, numCols);
-
     const headers = ['Fish ID', 'Description', 'Donor', 'Type', 'Status', 'Sale Price'];
     XLSX.utils.sheet_add_aoa(ws, [headers], { origin: 'A3' });
-    'ABCDEF'.split('').forEach((col, i) => {
-      ws[`${col}3`] = makeCell(headers[i], headerStyle());
-    });
-
+    'ABCDEF'.split('').forEach((col, i) => { ws[`${col}3`] = makeCell(headers[i], headerStyle()); });
     (data || []).forEach((f, i) => {
       const sold = f.sales && f.sales.length > 0;
-      const row = [
-        `${f.tanks?.letter || ''}${f.fish_number}`,
-        f.description,
-        f.donors ? `${f.donors.first_name} ${f.donors.last_name}` : '—',
-        f.type,
-        sold ? 'Sold' : 'Available',
-        sold ? Number(f.sales[0].sale_price) : '',
-      ];
-      const r = 3 + i;
-      const bg = sold ? green : (i % 2 === 0 ? white : lightTeal);
+      const row = [`${f.tanks?.letter || ''}${f.fish_number}`, f.description, f.donors ? `${f.donors.first_name} ${f.donors.last_name}` : '—', f.type, sold ? 'Sold' : 'Available', sold ? Number(f.sales[0].sale_price) : ''];
+      const r = 3 + i; const bg = sold ? green : (i % 2 === 0 ? white : lightTeal);
       XLSX.utils.sheet_add_aoa(ws, [row], { origin: { r, c: 0 } });
-      row.forEach((_, ci) => {
-        const addr = XLSX.utils.encode_cell({ r, c: ci });
-        ws[addr].s = cellStyle(bg, false, ci === 5 ? 'right' : 'left');
-      });
+      row.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r, c: ci }); ws[addr].s = cellStyle(bg, false, ci === 5 ? 'right' : 'left'); });
     });
-
     ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: 3 + (data || []).length, c: numCols - 1 } });
     setColWidths(ws, [10, 30, 20, 12, 12, 12]);
     ws['!rows'] = [{ hpt: 22 }, { hpt: 16 }];
@@ -1569,43 +1884,20 @@ async function exportCSV(table) {
     const ws = XLSX.utils.aoa_to_sheet([]);
     const numCols = 8;
     addTitleRows(ws, data, title, subtitle, numCols);
-
     const headers = ['Bidder #', 'First Name', 'Last Name', 'Phone', 'Member', 'Payment', 'Status', 'Total Paid'];
     XLSX.utils.sheet_add_aoa(ws, [headers], { origin: 'A3' });
-    'ABCDEFGH'.split('').forEach((col, i) => {
-      ws[`${col}3`] = makeCell(headers[i], headerStyle());
-    });
-
+    'ABCDEFGH'.split('').forEach((col, i) => { ws[`${col}3`] = makeCell(headers[i], headerStyle()); });
     (data || []).forEach((b, i) => {
-      const row = [
-        b.bidder_number,
-        b.first_name,
-        b.last_name,
-        b.phone || '',
-        b.is_member ? 'Yes' : 'No',
-        b.payment_method || '',
-        b.is_paid ? 'Paid' : 'Unpaid',
-        b.is_paid ? Number(b.total_paid || 0) : '',
-      ];
-      const r = 3 + i;
-      const bg = b.is_paid ? green : (i % 2 === 0 ? white : lightTeal);
+      const row = [b.bidder_number, b.first_name, b.last_name, b.phone || '', b.is_member ? 'Yes' : 'No', b.payment_method || '', b.is_paid ? 'Paid' : 'Unpaid', b.is_paid ? Number(b.total_paid || 0) : ''];
+      const r = 3 + i; const bg = b.is_paid ? green : (i % 2 === 0 ? white : lightTeal);
       XLSX.utils.sheet_add_aoa(ws, [row], { origin: { r, c: 0 } });
-      row.forEach((_, ci) => {
-        const addr = XLSX.utils.encode_cell({ r, c: ci });
-        ws[addr].s = cellStyle(bg, false, [0, 7].includes(ci) ? 'right' : 'left');
-      });
+      row.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r, c: ci }); ws[addr].s = cellStyle(bg, false, [0, 7].includes(ci) ? 'right' : 'left'); });
     });
-
-    const paidCount = (data || []).filter(b => b.is_paid).length;
     const totalCollected = (data || []).reduce((s, b) => s + Number(b.total_paid || 0), 0);
     const summaryRow = 3 + (data || []).length;
     const summary = ['', '', '', '', '', '', 'TOTAL COLLECTED', totalCollected];
     XLSX.utils.sheet_add_aoa(ws, [summary], { origin: { r: summaryRow, c: 0 } });
-    summary.forEach((_, ci) => {
-      const addr = XLSX.utils.encode_cell({ r: summaryRow, c: ci });
-      ws[addr] = makeCell(summary[ci], cellStyle(lightTeal, true, ci === 7 ? 'right' : 'left'));
-    });
-
+    summary.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r: summaryRow, c: ci }); ws[addr] = makeCell(summary[ci], cellStyle(lightTeal, true, ci === 7 ? 'right' : 'left')); });
     ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: summaryRow, c: numCols - 1 } });
     setColWidths(ws, [10, 15, 15, 15, 8, 14, 10, 12]);
     ws['!rows'] = [{ hpt: 22 }, { hpt: 16 }];
@@ -1617,40 +1909,20 @@ async function exportCSV(table) {
     const ws = XLSX.utils.aoa_to_sheet([]);
     const numCols = 6;
     addTitleRows(ws, data, title, subtitle, numCols);
-
     const headers = ['Fish ID', 'Description', 'Bidder #', 'Bidder Name', 'Sale Price', 'Date'];
     XLSX.utils.sheet_add_aoa(ws, [headers], { origin: 'A3' });
-    'ABCDEF'.split('').forEach((col, i) => {
-      ws[`${col}3`] = makeCell(headers[i], headerStyle());
-    });
-
+    'ABCDEF'.split('').forEach((col, i) => { ws[`${col}3`] = makeCell(headers[i], headerStyle()); });
     (data || []).forEach((s, i) => {
-      const row = [
-        `${s.fish?.tanks?.letter || ''}${s.fish?.fish_number || ''}`,
-        s.fish?.description || '',
-        s.bidders?.bidder_number || '',
-        `${s.bidders?.first_name || ''} ${s.bidders?.last_name || ''}`.trim(),
-        Number(s.sale_price),
-        s.created_at ? s.created_at.split('T')[0] : '',
-      ];
-      const r = 3 + i;
-      const bg = i % 2 === 0 ? white : lightTeal;
+      const row = [`${s.fish?.tanks?.letter || ''}${s.fish?.fish_number || ''}`, s.fish?.description || '', s.bidders?.bidder_number || '', `${s.bidders?.first_name || ''} ${s.bidders?.last_name || ''}`.trim(), Number(s.sale_price), s.created_at ? s.created_at.split('T')[0] : ''];
+      const r = 3 + i; const bg = i % 2 === 0 ? white : lightTeal;
       XLSX.utils.sheet_add_aoa(ws, [row], { origin: { r, c: 0 } });
-      row.forEach((_, ci) => {
-        const addr = XLSX.utils.encode_cell({ r, c: ci });
-        ws[addr].s = cellStyle(bg, false, [2, 4].includes(ci) ? 'right' : 'left');
-      });
+      row.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r, c: ci }); ws[addr].s = cellStyle(bg, false, [2, 4].includes(ci) ? 'right' : 'left'); });
     });
-
-    const totalRow = 3 + (data || []).length;
     const grandTotal = (data || []).reduce((s, r) => s + Number(r.sale_price), 0);
+    const totalRow = 3 + (data || []).length;
     const summary = ['', '', '', 'TOTAL', grandTotal, ''];
     XLSX.utils.sheet_add_aoa(ws, [summary], { origin: { r: totalRow, c: 0 } });
-    summary.forEach((_, ci) => {
-      const addr = XLSX.utils.encode_cell({ r: totalRow, c: ci });
-      ws[addr] = makeCell(summary[ci], cellStyle(lightTeal, true, [3, 4].includes(ci) ? 'right' : 'left'));
-    });
-
+    summary.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r: totalRow, c: ci }); ws[addr] = makeCell(summary[ci], cellStyle(lightTeal, true, [3, 4].includes(ci) ? 'right' : 'left')); });
     ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: totalRow, c: numCols - 1 } });
     setColWidths(ws, [10, 30, 10, 20, 12, 14]);
     ws['!rows'] = [{ hpt: 22 }, { hpt: 16 }];
@@ -1662,40 +1934,20 @@ async function exportCSV(table) {
     const ws = XLSX.utils.aoa_to_sheet([]);
     const numCols = 6;
     addTitleRows(ws, data, title, subtitle, numCols);
-
     const headers = ['Bidder #', 'Bidder Name', 'Item', 'Qty', 'Unit Price', 'Total'];
     XLSX.utils.sheet_add_aoa(ws, [headers], { origin: 'A3' });
-    'ABCDEF'.split('').forEach((col, i) => {
-      ws[`${col}3`] = makeCell(headers[i], headerStyle());
-    });
-
+    'ABCDEF'.split('').forEach((col, i) => { ws[`${col}3`] = makeCell(headers[i], headerStyle()); });
     (data || []).forEach((p, i) => {
-      const row = [
-        p.bidders?.bidder_number || '',
-        `${p.bidders?.first_name || ''} ${p.bidders?.last_name || ''}`.trim(),
-        p.item_name,
-        Number(p.quantity),
-        Number(p.unit_price),
-        Number(p.total_price),
-      ];
-      const r = 3 + i;
-      const bg = i % 2 === 0 ? white : lightTeal;
+      const row = [p.bidders?.bidder_number || '', `${p.bidders?.first_name || ''} ${p.bidders?.last_name || ''}`.trim(), p.item_name, Number(p.quantity), Number(p.unit_price), Number(p.total_price)];
+      const r = 3 + i; const bg = i % 2 === 0 ? white : lightTeal;
       XLSX.utils.sheet_add_aoa(ws, [row], { origin: { r, c: 0 } });
-      row.forEach((_, ci) => {
-        const addr = XLSX.utils.encode_cell({ r, c: ci });
-        ws[addr].s = cellStyle(bg, false, [0, 3, 4, 5].includes(ci) ? 'right' : 'left');
-      });
+      row.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r, c: ci }); ws[addr].s = cellStyle(bg, false, [0, 3, 4, 5].includes(ci) ? 'right' : 'left'); });
     });
-
-    const totalRow = 3 + (data || []).length;
     const grandTotal = (data || []).reduce((s, r) => s + Number(r.total_price), 0);
+    const totalRow = 3 + (data || []).length;
     const summary = ['', '', '', '', 'TOTAL', grandTotal];
     XLSX.utils.sheet_add_aoa(ws, [summary], { origin: { r: totalRow, c: 0 } });
-    summary.forEach((_, ci) => {
-      const addr = XLSX.utils.encode_cell({ r: totalRow, c: ci });
-      ws[addr] = makeCell(summary[ci], cellStyle(lightTeal, true, [4, 5].includes(ci) ? 'right' : 'left'));
-    });
-
+    summary.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r: totalRow, c: ci }); ws[addr] = makeCell(summary[ci], cellStyle(lightTeal, true, [4, 5].includes(ci) ? 'right' : 'left')); });
     ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: totalRow, c: numCols - 1 } });
     setColWidths(ws, [10, 20, 25, 8, 12, 12]);
     ws['!rows'] = [{ hpt: 22 }, { hpt: 16 }];
@@ -1705,95 +1957,47 @@ async function exportCSV(table) {
   } else if (table === 'donor_payouts') {
     const { data: donors } = await sb.from('donors').select('*').eq('year_id', appSettings.activeYearId).order('last_name');
     const { data: fish } = await sb.from('fish').select('*, tanks(letter), sales(sale_price)').eq('year_id', appSettings.activeYearId);
-
     const ws = XLSX.utils.aoa_to_sheet([]);
     const numCols = 7;
     addTitleRows(ws, [], title, subtitle, numCols);
-
     const headers = ['Donor', 'Type', 'Payout %', 'Fish ID', 'Description', 'Sale Price', 'Donor Payout'];
     XLSX.utils.sheet_add_aoa(ws, [headers], { origin: 'A3' });
-    'ABCDEFG'.split('').forEach((col, i) => {
-      ws[`${col}3`] = makeCell(headers[i], headerStyle());
-    });
-
+    'ABCDEFG'.split('').forEach((col, i) => { ws[`${col}3`] = makeCell(headers[i], headerStyle()); });
     let currentRow = 4;
-
     for (const donor of (donors || [])) {
       const donorFish = (fish || []).filter(f => f.donor_id === donor.id);
       const percent = donor.type === 'Pickup' ? 0.40 : donor.type === 'Dropoff' ? 0.50 : 0;
       const percentLabel = `${(percent * 100).toFixed(0)}%`;
       const donorName = `${donor.first_name} ${donor.last_name}`;
-
-      let donorTotal = 0;
-      let donorPayout = 0;
-
+      let donorTotal = 0; let donorPayout = 0;
       for (const f of donorFish) {
         const sold = f.sales && f.sales.length > 0;
         const salePrice = sold ? Number(f.sales[0].sale_price) : 0;
         const fishPayout = salePrice * percent;
-        donorTotal += salePrice;
-        donorPayout += fishPayout;
-
-        const row = [
-          donorName,
-          donor.type,
-          percentLabel,
-          `${f.tanks?.letter || ''}${f.fish_number}`,
-          f.description,
-          sold ? salePrice : '',
-          sold && fishPayout > 0 ? fishPayout : '',
-        ];
-
+        donorTotal += salePrice; donorPayout += fishPayout;
+        const row = [donorName, donor.type, percentLabel, `${f.tanks?.letter || ''}${f.fish_number}`, f.description, sold ? salePrice : '', sold && fishPayout > 0 ? fishPayout : ''];
         const bg = sold ? green : (currentRow % 2 === 0 ? white : lightTeal);
         XLSX.utils.sheet_add_aoa(ws, [row], { origin: { r: currentRow - 1, c: 0 } });
-        row.forEach((_, ci) => {
-          const addr = XLSX.utils.encode_cell({ r: currentRow - 1, c: ci });
-          ws[addr].s = cellStyle(bg, false, [5, 6].includes(ci) ? 'right' : 'left');
-        });
+        row.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r: currentRow - 1, c: ci }); ws[addr].s = cellStyle(bg, false, [5, 6].includes(ci) ? 'right' : 'left'); });
         currentRow++;
       }
-
-      const summaryRow = [
-        donorName,
-        donor.type,
-        percentLabel,
-        '',
-        `TOTAL OWED TO DONOR`,
-        donorTotal > 0 ? donorTotal : '',
-        donorPayout > 0 ? donorPayout : '',
-      ];
+      const summaryRow = [donorName, donor.type, percentLabel, '', 'TOTAL OWED TO DONOR', donorTotal > 0 ? donorTotal : '', donorPayout > 0 ? donorPayout : ''];
       XLSX.utils.sheet_add_aoa(ws, [summaryRow], { origin: { r: currentRow - 1, c: 0 } });
-      summaryRow.forEach((_, ci) => {
-        const addr = XLSX.utils.encode_cell({ r: currentRow - 1, c: ci });
-        ws[addr] = makeCell(summaryRow[ci], cellStyle(amber, true, [5, 6].includes(ci) ? 'right' : 'left'));
-      });
+      summaryRow.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r: currentRow - 1, c: ci }); ws[addr] = makeCell(summaryRow[ci], cellStyle(amber, true, [5, 6].includes(ci) ? 'right' : 'left')); });
       currentRow++;
-
       const blankRow = ['', '', '', '', '', '', ''];
       XLSX.utils.sheet_add_aoa(ws, [blankRow], { origin: { r: currentRow - 1, c: 0 } });
-      blankRow.forEach((_, ci) => {
-        const addr = XLSX.utils.encode_cell({ r: currentRow - 1, c: ci });
-        ws[addr] = makeCell('', cellStyle(white, false));
-      });
+      blankRow.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r: currentRow - 1, c: ci }); ws[addr] = makeCell('', cellStyle(white, false)); });
       currentRow++;
     }
-
-    const grandTotal = (fish || [])
-      .filter(f => f.sales && f.sales.length > 0)
-      .reduce((s, f) => {
-        const donor = (donors || []).find(d => d.id === f.donor_id);
-        const percent = donor?.type === 'Pickup' ? 0.40 : donor?.type === 'Dropoff' ? 0.50 : 0;
-        return s + Number(f.sales[0].sale_price) * percent;
-      }, 0);
-
+    const grandTotal = (fish || []).filter(f => f.sales && f.sales.length > 0).reduce((s, f) => {
+      const donor = (donors || []).find(d => d.id === f.donor_id);
+      const percent = donor?.type === 'Pickup' ? 0.40 : donor?.type === 'Dropoff' ? 0.50 : 0;
+      return s + Number(f.sales[0].sale_price) * percent;
+    }, 0);
     const grandRow = ['', '', '', '', 'GRAND TOTAL OWED TO ALL DONORS', '', grandTotal];
     XLSX.utils.sheet_add_aoa(ws, [grandRow], { origin: { r: currentRow - 1, c: 0 } });
-    grandRow.forEach((_, ci) => {
-      const addr = XLSX.utils.encode_cell({ r: currentRow - 1, c: ci });
-      ws[addr] = makeCell(grandRow[ci], cellStyle(teal, true, [5, 6].includes(ci) ? 'right' : 'left'));
-      if (ws[addr].s.font) ws[addr].s.font.color = { rgb: white };
-    });
-
+    grandRow.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r: currentRow - 1, c: ci }); ws[addr] = makeCell(grandRow[ci], cellStyle(teal, true, [5, 6].includes(ci) ? 'right' : 'left')); if (ws[addr].s.font) ws[addr].s.font.color = { rgb: white }; });
     ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: currentRow, c: numCols - 1 } });
     setColWidths(ws, [22, 12, 10, 10, 28, 12, 14]);
     ws['!rows'] = [{ hpt: 22 }, { hpt: 16 }];
@@ -1822,8 +2026,6 @@ async function populateDonorTypeSelects() {
 }
 
 // ============================================
-
-// ============================================
 // AUTO REFRESH
 // ============================================
 let refreshInterval = null;
@@ -1832,12 +2034,24 @@ function isModalOpen() {
   return document.querySelector('.modal-overlay.open') !== null;
 }
 
+function isUserTyping() {
+  const active = document.activeElement;
+  if (!active) return false;
+  const tag = active.tagName.toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select';
+}
+
 function getActivePage() {
   return document.querySelector('.nav-item.active')?.dataset?.page || 'dashboard';
 }
 
 async function silentRefresh() {
   if (isModalOpen()) return;
+  if (isUserTyping()) return;
+
+  const scrollX = window.scrollX;
+  const scrollY = window.scrollY;
+
   const page = getActivePage();
   switch(page) {
     case 'dashboard': await renderDashboard(); break;
@@ -1847,18 +2061,13 @@ async function silentRefresh() {
     case 'scribe':    await renderScribe();    break;
     case 'misc':      await renderMisc();      break;
   }
+
+  window.scrollTo(scrollX, scrollY);
 }
 
 function startAutoRefresh() {
   if (refreshInterval) clearInterval(refreshInterval);
   refreshInterval = setInterval(silentRefresh, 30000);
-}
-
-// ============================================
-// UTILITIES
-// ============================================
-function closeModal(id) {
-  document.getElementById(id).classList.remove('open');
 }
 
 // ============================================
@@ -1870,259 +2079,19 @@ function renderManual() {
       <div class="section-label">User manual</div>
     </div>
     <p style="font-size:13px;color:#1a5f7a;margin-bottom:16px;">Welcome to the Pikes Peak Koi & Water Garden Society Auction App. This manual walks you through every section of the app. Click any section below to expand it.</p>
-
     <div id="manual-accordion"></div>
   `);
 
   const sections = [
-    {
-      title: '📊 Overview — How the app works',
-      content: `
-        <p>This app is used to manage every part of the koi auction — from setting up fish before the event, to recording sales during the auction, to checking out bidders at the end.</p>
-        <br>
-        <p>Here is the general flow of the auction:</p>
-        <ol style="margin-left:20px;margin-top:8px;line-height:2;">
-          <li><strong>Before the auction:</strong> Add donors, create tanks, and add fish to each tank. Register bidders as they arrive.</li>
-          <li><strong>During the auction:</strong> Use the Scribe tab to record each fish sale as it happens.</li>
-          <li><strong>After the auction:</strong> Use the Misc tab to add any additional purchases. Use the Checkout tab to total up each bidder's bill and record their payment.</li>
-        </ol>
-        <br>
-        <p>The app works on any device — phones, tablets, and laptops. Multiple volunteers can use it at the same time from different devices. All data is shared and updates automatically every 30 seconds.</p>
-      `
-    },
-    {
-      title: '👥 Donors tab — Adding fish donors',
-      content: `
-        <p>Before adding any fish, you need to add the people who donated or brought fish to the auction. These are called <strong>donors</strong>.</p>
-        <br>
-        <p><strong>How to add a donor:</strong></p>
-        <ol style="margin-left:20px;margin-top:8px;line-height:2;">
-          <li>Click the <strong>Donors</strong> tab in the navigation bar at the top.</li>
-          <li>Click the green <strong>+ Add donor</strong> button in the top right.</li>
-          <li>Fill in the donor's first name, last name, phone number, and email.</li>
-          <li>Select the donor <strong>Type</strong> — this determines how much of the sale price they receive back:
-            <ul style="margin-left:20px;">
-              <li><strong>Pickup</strong> — the club picks up the fish from the donor</li>
-              <li><strong>Dropoff</strong> — the donor drops off the fish themselves</li>
-              <li><strong>Donation</strong> — the donor gives the fish for free, they receive nothing back</li>
-            </ul>
-          </li>
-          <li>Enter the number of fish they brought.</li>
-          <li>Click <strong>Save donor</strong>.</li>
-        </ol>
-        <br>
-        <p><strong>Editing a donor:</strong> Click the orange <strong>Edit</strong> button next to any donor to update their information.</p>
-        <br>
-        <p><strong>Deleting a donor:</strong> Click the red <strong>Delete</strong> button. Note — if a donor has fish linked to them, you must delete or reassign those fish first before you can delete the donor.</p>
-        <br>
-        <p style="background:#fef5e0;padding:10px;border-radius:7px;font-size:13px;">⚠️ <strong>Important:</strong> Always add donors before adding fish. The fish entry form requires you to select a donor, so if no donors exist you will not be able to add fish.</p>
-      `
-    },
-    {
-      title: '🐠 Fish tab — Setting up tanks and fish',
-      content: `
-        <p>The Fish tab is where you create tanks and add individual fish to each tank. Every fish in the auction must be entered here before the auction begins.</p>
-        <br>
-        <p><strong>Step 1 — Create a tank:</strong></p>
-        <ol style="margin-left:20px;margin-top:8px;line-height:2;">
-          <li>Click the <strong>Fish</strong> tab in the navigation bar.</li>
-          <li>Click the <strong>+ New tank</strong> button.</li>
-          <li>Enter a tank letter (e.g. A, B, C) and an optional description (e.g. "Large koi").</li>
-          <li>Click <strong>Create tank</strong>.</li>
-        </ol>
-        <br>
-        <p><strong>Step 2 — Add fish to a tank:</strong></p>
-        <ol style="margin-left:20px;margin-top:8px;line-height:2;">
-          <li>Find the tank card and click <strong>+ Add fish</strong>.</li>
-          <li>Enter the fish number (e.g. 1, 2, 3 — must be unique within that tank).</li>
-          <li>Enter a description of the fish (e.g. "Kohaku", "Tancho").</li>
-          <li>Select the donor from the dropdown. The type will automatically fill in based on that donor's type. You can change it if needed.</li>
-          <li>Click <strong>Save fish</strong>.</li>
-        </ol>
-        <br>
-        <p>Each fish gets a unique ID made up of the tank letter and fish number — for example, Tank A Fish 1 = <strong>A1</strong>. This ID is what the scribe uses during the auction.</p>
-        <br>
-        <p><strong>Filtering by tank:</strong> Use the tank chips at the top to filter the view to a specific tank, or click <strong>All</strong> to see every fish.</p>
-        <br>
-        <p><strong>Fish status:</strong> Each fish shows as <strong>Available</strong> (blue) or <strong>Sold</strong> (green) once a sale is recorded in the Scribe tab.</p>
-        <br>
-        <p><strong>Editing a fish:</strong> Click the orange <strong>Edit</strong> button on any fish row to update its details.</p>
-        <br>
-        <p><strong>Deleting a fish or tank:</strong> Click the red <strong>Delete</strong> button. Deleting a tank will also delete all fish inside it.</p>
-        <br>
-        <p style="background:#fef5e0;padding:10px;border-radius:7px;font-size:13px;">⚠️ <strong>Important:</strong> Two fish in the same tank cannot have the same number. The app will block this and show an error.</p>
-      `
-    },
-    {
-      title: '🪪 Bidders tab — Registering auction participants',
-      content: `
-        <p>Every person who wants to bid at the auction must be registered as a bidder. Each bidder gets a unique number that is used throughout the auction to track their purchases.</p>
-        <br>
-        <p><strong>How to register a bidder:</strong></p>
-        <ol style="margin-left:20px;margin-top:8px;line-height:2;">
-          <li>Click the <strong>Bidders</strong> tab in the navigation bar.</li>
-          <li>Click the green <strong>+ Register bidder</strong> button.</li>
-          <li>Enter a bidder number. This is the number printed on their paddle or card — it must be unique.</li>
-          <li>Enter their first name, last name, phone, and email.</li>
-          <li>Select whether they are a club member.</li>
-          <li>Click <strong>Save</strong>.</li>
-        </ol>
-        <br>
-        <p><strong>Bidder status badges:</strong></p>
-        <ul style="margin-left:20px;margin-top:8px;line-height:2;">
-          <li><span style="background:#fdecea;color:#922b21;padding:2px 8px;border-radius:20px;font-size:12px;font-weight:bold;">Unpaid</span> — has not checked out yet</li>
-          <li><span style="background:#fef5e0;color:#854F0B;padding:2px 8px;border-radius:20px;font-size:12px;font-weight:bold;border:1px solid #e8c44a;">Partially paid</span> — has made a partial payment but still owes money</li>
-          <li><span style="background:#e0f9f0;color:#0a6640;padding:2px 8px;border-radius:20px;font-size:12px;font-weight:bold;">Paid $0.00</span> — has paid in full, shows the total amount paid</li>
-        </ul>
-        <br>
-        <p><strong>Editing a bidder:</strong> Click the orange <strong>Edit</strong> button. Note — the bidder number cannot be changed once set.</p>
-        <br>
-        <p><strong>Deleting a bidder:</strong> Click the red <strong>Delete</strong> button. If the bidder has any sales or purchases recorded, you must delete those records first.</p>
-        <br>
-        <p style="background:#e8f4f8;padding:10px;border-radius:7px;font-size:13px;">💡 <strong>Tip:</strong> You can register bidders before, during, or after the auction. It is best to register them as they arrive so the scribe has their number ready.</p>
-      `
-    },
-    {
-      title: '✍️ Scribe tab — Recording sales during the auction',
-      content: `
-        <p>The Scribe tab is used during the live auction. As each fish is sold, the scribe enters the fish ID, the winning bidder's number, and the final sale price.</p>
-        <br>
-        <p><strong>How to record a sale:</strong></p>
-        <ol style="margin-left:20px;margin-top:8px;line-height:2;">
-          <li>Click the <strong>Scribe</strong> tab in the navigation bar.</li>
-          <li>In the <strong>Fish ID</strong> field, type the tank letter and fish number together — for example <strong>A1</strong> for Tank A Fish 1, or <strong>E14</strong> for Tank E Fish 14.</li>
-          <li>In the <strong>Bidder #</strong> field, type the winning bidder's number.</li>
-          <li>In the <strong>Sale price</strong> field, type the final sale price in dollars.</li>
-          <li>Press <strong>Enter</strong> or click <strong>✓ Record sale</strong>.</li>
-        </ol>
-        <br>
-        <p>If the sale is recorded successfully you will see a green <strong>Sale recorded!</strong> message and the fields will clear automatically so you are ready for the next fish.</p>
-        <br>
-        <p><strong>Sales log:</strong> All recorded sales appear in the log below the entry form, showing the fish ID, description, winning bidder, and price. The most recent sale appears at the top.</p>
-        <br>
-        <p><strong>Deleting a sale:</strong> If you made a mistake, click the red <strong>Delete</strong> button on that row in the sales log to remove it. You can then re-enter the correct information.</p>
-        <br>
-        <p style="background:#fdecea;padding:10px;border-radius:7px;font-size:13px;">🚫 <strong>The app will block these common mistakes:</strong></p>
-        <ul style="margin-left:20px;margin-top:8px;line-height:2;font-size:13px;">
-          <li>Recording a sale for a fish that has already been sold</li>
-          <li>Entering a fish ID that does not exist</li>
-          <li>Entering a bidder number that has not been registered</li>
-          <li>Entering a sale price of $0 or a negative number</li>
-        </ul>
-      `
-    },
-    {
-      title: '🛒 Misc tab — Additional purchases',
-      content: `
-        <p>The Misc tab is used to record any purchases that are not auction fish — such as small koi, food, memberships, or other items sold at the event.</p>
-        <br>
-        <p><strong>How to add a misc purchase:</strong></p>
-        <ol style="margin-left:20px;margin-top:8px;line-height:2;">
-          <li>Click the <strong>Misc</strong> tab in the navigation bar.</li>
-          <li>Enter the bidder's number in the <strong>Bidder #</strong> field.</li>
-          <li>Select the item from the <strong>Item</strong> dropdown. The price is shown next to each item.</li>
-          <li>Enter the quantity.</li>
-          <li>Click <strong>+ Add purchase</strong>.</li>
-        </ol>
-        <br>
-        <p>The purchase log below shows all misc purchases recorded so far, organized by most recent first.</p>
-        <br>
-        <p><strong>Editing a purchase:</strong> Click the orange <strong>Edit</strong> button on any row to change the item name, quantity, or price.</p>
-        <br>
-        <p><strong>Deleting a purchase:</strong> Click the red <strong>Delete</strong> button to remove a purchase entirely.</p>
-        <br>
-        <p style="background:#e8f4f8;padding:10px;border-radius:7px;font-size:13px;">💡 <strong>Tip:</strong> Misc purchases can be added at any time — before, during, or after the auction. They will automatically appear in the bidder's checkout total.</p>
-      `
-    },
-    {
-      title: '🧾 Checkout tab — Taking payment from bidders',
-      content: `
-        <p>The Checkout tab is used after the auction to calculate each bidder's total bill and record their payment.</p>
-        <br>
-        <p><strong>How to check out a bidder:</strong></p>
-        <ol style="margin-left:20px;margin-top:8px;line-height:2;">
-          <li>Click the <strong>Checkout</strong> tab in the navigation bar.</li>
-          <li>Type the bidder's number and click <strong>Look up</strong>.</li>
-          <li>The app will show all the fish they won, any misc purchases, and the grand total due.</li>
-          <li>Select the payment method — Cash, Credit Card, or Check.</li>
-          <li>If paying by check or credit card, optionally enter the check number or last 4 digits of the card.</li>
-          <li>Click <strong>✓ Record payment</strong>.</li>
-        </ol>
-        <br>
-        <p><strong>Partial payments:</strong> If a bidder can only pay part of their total, change the amount in the payment field to the partial amount. The app will record it and mark them as <strong>Partially paid</strong>. When they return to pay the rest, look them up again and record the remaining amount.</p>
-        <br>
-        <p><strong>Refreshing the total:</strong> Click the <strong>↻ Refresh</strong> button to reload the bidder's total in case any new purchases were added after you looked them up.</p>
-        <br>
-        <p><strong>Printing a receipt:</strong> Click <strong>🖨️ Print receipt</strong> to open a print dialog. The receipt includes all fish purchased, misc purchases, payment history, and whether they are paid in full. You can print two copies — one for the bidder and one for your records. To save as a PDF instead of printing, select "Save as PDF" in your printer options.</p>
-        <br>
-        <p><strong>Already paid bidders:</strong> If a bidder has already paid in full, their checkout screen will show a green "Paid in full" message and the payment button will be hidden. You can still print their receipt.</p>
-        <br>
-        <p style="background:#e8f4f8;padding:10px;border-radius:7px;font-size:13px;">💡 <strong>Tip:</strong> Always click Refresh right before taking payment to make sure the total includes any last-minute purchases added from another device.</p>
-      `
-    },
-    {
-      title: '⚙️ Admin tab — Managing the auction',
-      content: `
-        <p>The Admin tab is password-protected and is used by the auction organizer to manage settings, years, and data. Volunteers do not need to access this tab.</p>
-        <br>
-        <p><strong>Logging in:</strong> Click the <strong>Admin</strong> tab and enter the admin password. Ask your auction organizer for the password if you need access.</p>
-        <br>
-        <p><strong>Auction years:</strong> The app supports multiple auction years. Each year has its own completely separate set of data — donors, fish, bidders, sales, and purchases. The active year is shown in the header at the top of the app.</p>
-        <ul style="margin-left:20px;margin-top:8px;line-height:2;">
-          <li><strong>Switching years:</strong> Click any year pill to switch to that year. A confirmation popup will appear. Switching years updates the active year for all devices immediately.</li>
-          <li><strong>Creating a new year:</strong> Enter the year number and click <strong>Create new auction year</strong>. This creates a fresh empty dataset for that year and sets it as active.</li>
-        </ul>
-        <br>
-        <p><strong>Misc items price list:</strong> This is the list of items that appear in the Misc tab dropdown. You can add, edit, or delete items here to customize what is available for sale.</p>
-        <br>
-        <p><strong>Changing the admin password:</strong> Enter your current password, then your new password twice, and click <strong>Update password</strong>. The password must be at least 6 characters.</p>
-        <br>
-        <p><strong>Exporting data:</strong> You can export any section of the auction data as a formatted Excel file. The available exports are:</p>
-        <ul style="margin-left:20px;margin-top:8px;line-height:2;">
-          <li><strong>Export donors</strong> — list of all donors and their details</li>
-          <li><strong>Export fish</strong> — full fish catalog with sale status</li>
-          <li><strong>Export bidders</strong> — all registered bidders and payment status</li>
-          <li><strong>Export sales</strong> — every auction sale with fish and bidder details</li>
-          <li><strong>Export misc</strong> — all miscellaneous purchases</li>
-          <li><strong>⭐ Export donor payouts</strong> — the most important export. Shows every donor, each of their fish, the sale price, and exactly how much the club owes them based on their donor type.</li>
-        </ul>
-        <br>
-        <p style="background:#fdecea;padding:10px;border-radius:7px;font-size:13px;">🔒 <strong>Keep the admin password safe.</strong> Anyone with the password can switch years, change settings, and export all auction data.</p>
-      `
-    },
-    {
-      title: '❓ Troubleshooting — Common issues',
-      content: `
-        <p>Here are solutions to the most common issues you might encounter:</p>
-        <br>
-        <p><strong>"Fish not found" error in Scribe</strong><br>
-        Double check the fish ID you typed. It must be the tank letter followed immediately by the fish number with no spaces — for example <strong>A1</strong> not <strong>A 1</strong>. Also make sure the fish has been added in the Fish tab.</p>
-        <br>
-        <p><strong>"Bidder not found" error in Scribe or Misc</strong><br>
-        The bidder must be registered in the Bidders tab before their number can be used. Ask the registration table to add them first.</p>
-        <br>
-        <p><strong>"This fish has already been sold" error</strong><br>
-        That fish was already recorded as sold to another bidder. Check the sales log in the Scribe tab to see who bought it. If it was a mistake, delete that sale from the log and re-enter the correct one.</p>
-        <br>
-        <p><strong>"A fish with that number already exists in this tank" error</strong><br>
-        Each fish in a tank must have a unique number. Use the next available number for that tank.</p>
-        <br>
-        <p><strong>Cannot delete a donor</strong><br>
-        The donor has fish linked to them. Go to the Fish tab, delete or edit those fish to use a different donor, then try deleting the donor again.</p>
-        <br>
-        <p><strong>Cannot delete a bidder</strong><br>
-        The bidder has sales or misc purchases recorded. Go to the Scribe tab and delete their sales, and go to the Misc tab and delete their purchases, then try again.</p>
-        <br>
-        <p><strong>The totals look wrong in Checkout</strong><br>
-        Click the <strong>↻ Refresh</strong> button to reload the latest data from the database. Another device may have added purchases after you looked up the bidder.</p>
-        <br>
-        <p><strong>The app is showing the wrong year's data</strong><br>
-        Check the subtitle in the top bar — it shows which year is currently active. If it is wrong, go to the Admin tab, log in, and click the correct year pill to switch.</p>
-        <br>
-        <p><strong>Something else is wrong</strong><br>
-        Try refreshing the page in your browser. If the problem continues, check with the auction organizer who manages the app.</p>
-      `
-    }
+    { title: '📊 Overview — How the app works', content: `<p>This app manages every part of the koi auction — from setting up fish before the event, to recording sales during the auction, to checking out bidders at the end.</p><br><p><strong>General flow:</strong></p><ol style="margin-left:20px;margin-top:8px;line-height:2;"><li><strong>Before:</strong> Add donors, create tanks, add fish, register bidders.</li><li><strong>During:</strong> Use the Scribe tab to record each fish sale.</li><li><strong>After:</strong> Use Misc for additional purchases. Use Checkout to total bills and record payments.</li></ol><br><p>Works on any device. Multiple volunteers can use it simultaneously. Data updates every 30 seconds.</p>` },
+    { title: '👥 Donors tab — Adding fish donors', content: `<p>Add donors before adding any fish.</p><br><ol style="margin-left:20px;line-height:2;"><li>Click <strong>+ Add donor</strong>.</li><li>Fill in name, phone, email.</li><li>Select <strong>Type</strong> — determines payout percentage.</li><li>Enter number of fish they brought.</li><li>Click <strong>Save donor</strong>.</li></ol><br><p><strong>Edit:</strong> Orange Edit button. <strong>Delete:</strong> Red Delete button — blocked if fish are linked.</p>` },
+    { title: '🐠 Fish tab — Setting up tanks and fish', content: `<p>Create tanks first, then add fish to each tank.</p><br><p><strong>Create a tank:</strong> Click <strong>+ New tank</strong>, enter a letter and optional description.</p><br><p><strong>Add fish:</strong> Click <strong>+ Add fish</strong> on a tank card. Fish number auto-fills to the next available. Select donor — type auto-fills. Click <strong>Save fish</strong>.</p><br><p>Fish ID = tank letter + fish number (e.g. A1). The fish page shows both sale status (sold/available) and payment status (paid/unpaid).</p>` },
+    { title: '🪪 Bidders tab — Registering auction participants', content: `<p>Every bidder needs a unique number. Bidder number auto-fills to the next available when registering.</p><br><ol style="margin-left:20px;line-height:2;"><li>Click <strong>+ Register bidder</strong>.</li><li>Confirm or change the bidder number.</li><li>Fill in name, phone, email, membership status.</li><li>Click <strong>Save</strong>.</li></ol><br><p>Status badges: <strong>Unpaid</strong> (red), <strong>Partially paid</strong> (yellow), <strong>Paid</strong> (green with amount).</p>` },
+    { title: '✍️ Scribe tab — Recording sales during the auction', content: `<p>Used during the live auction to record each fish sale.</p><br><ol style="margin-left:20px;line-height:2;"><li>Select the <strong>tank</strong> from the dropdown.</li><li>Select the <strong>fish</strong> — only unsold fish appear.</li><li>Enter the <strong>bidder number</strong> — their name appears automatically for verification.</li><li>Enter the <strong>sale price</strong>.</li><li>Press <strong>Enter</strong> or click <strong>✓ Record sale</strong>.</li></ol><br><p>The sales log can be sorted by recency, tank, bidder, or donor. Each row has Edit and Delete buttons.</p>` },
+    { title: '🛒 Misc tab — Additional purchases', content: `<p>Record non-auction purchases. Enter bidder number — name appears for verification.</p><br><ol style="margin-left:20px;line-height:2;"><li>Enter bidder number.</li><li>Select item from dropdown.</li><li>For <strong>quantity-based</strong> items: enter how many. For <strong>fixed amount</strong> items: enter the dollar amount directly.</li><li>Click <strong>+ Add purchase</strong>.</li></ol>` },
+    { title: '🧾 Checkout tab — Taking payment from bidders', content: `<p>Enter a bidder number — their name appears for verification. Click <strong>Look up</strong>.</p><br><p>The app shows all fish won, misc purchases, and grand total. Non-members will be offered a membership once per session.</p><br><p><strong>Partial payments:</strong> Change the amount field to the partial amount. Look them up again later to pay the rest.</p><br><p>Click <strong>↻ Refresh</strong> before taking payment to catch any last-minute additions. Click <strong>🖨️ Print receipt</strong> to print or save as PDF.</p>` },
+    { title: '⚙️ Admin tab — Managing the auction', content: `<p>Password protected. Default password is <strong>admin1234</strong>.</p><br><p><strong>Years:</strong> Switch between years or create new ones. Delete button appears on inactive years — requires typing the year number to confirm.</p><br><p><strong>Donor types:</strong> Add, edit, or delete payout percentage types. Changes update all linked fish.</p><br><p><strong>Misc items:</strong> Manage the price list. Each item can be quantity-based or fixed amount.</p><br><p><strong>Exports:</strong> Download formatted Excel files for all data including donor payouts.</p>` },
+    { title: '❓ Troubleshooting — Common issues', content: `<p><strong>Fish not found in Scribe:</strong> Make sure it was added in the Fish tab and hasn't already been sold.</p><br><p><strong>Bidder not found:</strong> Register them in the Bidders tab first.</p><br><p><strong>Fish already sold:</strong> Check the scribe log. Delete the wrong sale and re-enter.</p><br><p><strong>Can't delete a donor:</strong> Reassign or delete their fish first.</p><br><p><strong>Can't delete a bidder:</strong> Delete their sales and misc purchases first.</p><br><p><strong>Wrong totals in Checkout:</strong> Click ↻ Refresh.</p><br><p><strong>Wrong year showing:</strong> Go to Admin and switch to the correct year.</p>` }
   ];
 
   const accordion = document.getElementById('manual-accordion');
@@ -2133,9 +2102,7 @@ function renderManual() {
         <span id="manual-arrow-${i}" style="font-size:18px;color:#4db8d4;transition:transform 0.2s;">▼</span>
       </div>
       <div id="manual-section-${i}" style="display:none;">
-        <div class="card-body" style="font-size:13px;line-height:1.7;color:#222;">
-          ${s.content}
-        </div>
+        <div class="card-body" style="font-size:13px;line-height:1.7;color:#222;">${s.content}</div>
       </div>
     </div>
   `).join('');
@@ -2154,6 +2121,7 @@ function toggleManualSection(index) {
 // ============================================
 async function init() {
   await loadSettings();
+  await loadBidderCache();
   renderDashboard();
   startAutoRefresh();
 }

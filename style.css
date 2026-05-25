@@ -131,6 +131,8 @@ body {
 .badge-check { background: #fef5e0; color: #7d5a0a; }
 .badge-member { background: #e8f4f8; color: #1a5f7a; }
 .badge-partial { background: #fef5e0; color: #854F0B; border: 1px solid #e8c44a; }
+.badge-sold-paid { background: #e0f9f0; color: #0a6640; }
+.badge-sold-unpaid { background: #fdecea; color: #922b21; }
 
 /* Fish ID pill */
 .fish-id {
@@ -179,6 +181,21 @@ body {
   gap: 12px;
 }
 
+/* Bidder lookup inline */
+.bidder-lookup-row {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
+}
+.bidder-lookup-row input {
+  width: 120px; padding: 8px 10px;
+  border-radius: 7px; border: 0.5px solid #c8e8f0;
+  font-size: 13px; color: #222; background: white;
+}
+.bidder-name-display {
+  font-size: 13px; font-weight: bold; color: #1a5f7a;
+  min-width: 120px;
+}
+.bidder-name-display.not-found { color: #c0392b; font-weight: normal; }
+
 /* Section label */
 .section-label {
   font-size: 11px; font-weight: bold; color: #1a5f7a;
@@ -207,6 +224,18 @@ body {
   font-size: 13px; border: 1.5px dashed #4db8d4;
   color: #1a5f7a; background: transparent; cursor: pointer;
 }
+
+/* Dashboard totals tabs */
+.totals-tabs {
+  display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap;
+}
+.totals-tab {
+  padding: 6px 14px; border-radius: 20px;
+  font-size: 13px; cursor: pointer;
+  border: 0.5px solid #4db8d4; color: #1a5f7a; background: white;
+  font-weight: bold;
+}
+.totals-tab.active { background: #1a5f7a; color: white; border-color: #1a5f7a; }
 
 /* Modal */
 .modal-overlay {
@@ -258,6 +287,7 @@ body {
 }
 .alert-success { background: #e0f9f0; color: #0a6640; }
 .alert-error { background: #fdecea; color: #922b21; }
+.alert-info { background: #e8f4f8; color: #1a5f7a; }
 
 /* Admin */
 .admin-login {
@@ -280,6 +310,18 @@ body {
 }
 .danger-zone h3 { color: #c0392b; font-size: 13px; margin-bottom: 10px; }
 
+/* Sort bar */
+.sort-bar {
+  display: flex; gap: 6px; align-items: center;
+  margin-bottom: 10px; flex-wrap: wrap;
+}
+.sort-bar label { font-size: 12px; color: #1a5f7a; font-weight: bold; }
+.sort-bar select {
+  padding: 5px 10px; border-radius: 7px;
+  border: 0.5px solid #c8e8f0; font-size: 12px;
+  color: #222; background: white;
+}
+
 /* Print styles */
 @page { margin: 1cm; }
 @media print {
@@ -290,7 +332,9 @@ body {
 
 .receipt {
   font-family: Arial, sans-serif;
+  background: white !important;
   max-width: 500px; margin: 0 auto; padding: 30px;
+  color: #000 !important;
 }
 .receipt-header { text-align: center; margin-bottom: 20px; }
 .receipt-header img { width: 70px; height: 70px; border-radius: 50%; margin-bottom: 8px; }
