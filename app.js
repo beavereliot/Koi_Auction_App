@@ -187,8 +187,6 @@ async function renderDashboard() {
     miscBreakdown[p.item_name].total += Number(p.total_price);
   });
 
-  dashTabData = { donor_payouts: donorPayoutsHtml, misc_items: miscItemsHtml, payments: paymentsHtml };
-
   const totalsTabsHtml = `
     <div class="totals-tabs">
       <div class="totals-tab ${dashTotalsTab === 'donor_payouts' ? 'active' : ''}" data-tab="donor_payouts" onclick="switchDashTab('donor_payouts')">Donor payouts</div>
@@ -249,6 +247,9 @@ async function renderDashboard() {
       </tbody>
     </table>
   `;
+
+  // Store tab HTML now that all three strings are defined
+  dashTabData = { donor_payouts: donorPayoutsHtml, misc_items: miscItemsHtml, payments: paymentsHtml };
 
   const tabContent = dashTotalsTab === 'donor_payouts' ? donorPayoutsHtml : dashTotalsTab === 'misc_items' ? miscItemsHtml : paymentsHtml;
 
@@ -322,11 +323,14 @@ async function renderDashboard() {
 
 function switchDashTab(tab) {
   dashTotalsTab = tab;
+  const scrollY = window.scrollY;
   document.querySelectorAll('.totals-tab').forEach(el => {
     el.classList.toggle('active', el.dataset.tab === tab);
   });
   const content = document.getElementById('dash-tab-content');
   if (content) content.innerHTML = dashTabData[tab] || '';
+  // Restore scroll immediately after DOM update to prevent browser jump
+  requestAnimationFrame(() => window.scrollTo(0, scrollY));
 }
 
 // ============================================

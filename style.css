@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&family=Playfair+Display:wght@700&display=swap');
+﻿@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800&family=Playfair+Display:wght@700&display=swap');
 
 /* ─── Design tokens ────────────────────────── */
 :root {
@@ -30,30 +30,24 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* ─── App layout ───────────────────────────── */
+/* ─── App grid ──────────────────────────────── */
 /*
-  Desktop : sidebar fixed left  |  main-wrap (banner → content) on right
-  Mobile  : hero banner top  →  sidebar nav strip  →  content
-            (achieved via display:contents on main-wrap so its children
-             can be individually ordered in the mobile column flex)
+  Desktop: sidebar spans full height on left; hero banner top-right; content bottom-right
+  Mobile:  hero banner (order 1) → sidebar nav strip (order 2) → content (order 3)
 */
 .app {
-  display: flex;
+  display: grid;
+  grid-template-columns: var(--sidebar) 1fr;
+  grid-template-rows: 230px 1fr;
+  grid-template-areas:
+    "sidebar hero"
+    "sidebar content";
   min-height: 100vh;
-}
-.main-wrap {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 100vh;
-  overflow-x: hidden;
 }
 
 /* ─── Sidebar ──────────────────────────────── */
 .sidebar {
-  width: var(--sidebar);
-  flex-shrink: 0;
+  grid-area: sidebar;
   background: #050508;
   display: flex; flex-direction: column;
   position: sticky; top: 0; height: 100vh;
@@ -127,12 +121,11 @@ body {
 
 /* ─── Hero banner ──────────────────────────── */
 .hero-banner {
+  grid-area: hero;
   background-image: url('assets/hero-banner.webp');
   background-size: cover;
   background-position: center center;
   position: relative; overflow: hidden;
-  height: 230px;
-  flex-shrink: 0;
 }
 
 .live-badge {
@@ -156,7 +149,7 @@ body {
 
 /* ─── Main content area ────────────────────── */
 .content {
-  flex: 1;
+  grid-area: content;
   padding: 24px;
   background-color: var(--cream);
   background-image: url('assets/decor/seigaiha-pattern.svg');
@@ -554,29 +547,18 @@ body {
 .mobile-brand {
   display: none;
 }
+/* ─── Mobile brand strip (hidden on desktop) ─── */
+.mobile-brand { display: none; }
 
-/* ─── Mobile (≤ 768px) ───────────────────────── */
-/*
-  main-wrap uses display:contents so its children (hero-banner, content)
-  become direct flex children of .app and can be ordered independently
-  of the sidebar, giving us:  hero → sidebar-nav → content
-*/
+/* ─── Mobile (<=768px) ─── */
 @media (max-width: 768px) {
-  .app { flex-direction: column; }
+  .app { display: flex; flex-direction: column; }
 
-  /* Collapse main-wrap so its children participate directly in .app */
-  .main-wrap { display: contents; }
-
-  /* 1 — Hero banner at the very top */
   .hero-banner { order: 1; height: 190px; }
 
-  /* Mobile brand overlay — sits at the bottom of the hero banner */
   .mobile-brand {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    position: absolute;
-    bottom: 0; left: 0; right: 0;
+    display: flex; align-items: center; gap: 10px;
+    position: absolute; bottom: 0; left: 0; right: 0;
     padding: 10px 14px 11px;
     background: linear-gradient(transparent, rgba(5,5,8,0.82));
   }
@@ -592,18 +574,11 @@ body {
     font-size: 12px; font-weight: 700; line-height: 1.35;
   }
   .mobile-brand-sub {
-    color: var(--red);
-    font-size: 10px; font-weight: 700;
-    text-transform: uppercase; letter-spacing: 0.06em;
-    margin-top: 2px;
+    color: var(--red); font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.06em; margin-top: 2px;
   }
 
-  /* 2 — Sidebar becomes horizontal nav strip */
-  .sidebar {
-    order: 2;
-    position: static; width: 100%; height: auto;
-    background: #050508;
-  }
+  .sidebar { order: 2; position: static; width: 100%; height: auto; }
   .sidebar-brand { display: none; }
   .sidebar-art   { display: none; }
   .sidebar-nav {
@@ -613,56 +588,42 @@ body {
   }
   .sidebar-nav::-webkit-scrollbar { display: none; }
   .nav-item {
-    border-left: none;
-    border-bottom: 2px solid transparent;
-    padding: 10px 12px;
-    font-size: 11px; gap: 5px; flex-shrink: 0;
+    border-left: none; border-bottom: 2px solid transparent;
+    padding: 10px 12px; font-size: 11px; gap: 5px; flex-shrink: 0;
   }
   .nav-item.active {
-    border-left: none;
-    border-bottom-color: var(--red);
+    border-left: none; border-bottom-color: var(--red);
     background: rgba(201,58,47,0.12);
   }
   .nav-icon { width: 14px; height: 14px; }
 
-  /* 3 — Content below nav */
-  .content { order: 3; padding: 12px; }
+  .content { order: 3; padding: 12px; flex: 1; }
 
-  /* Stat grid */
   .stats-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
   .stat-card  { padding: 11px 10px; gap: 8px; }
   .stat-icon  { width: 44px; height: 44px; }
   .stat-value { font-size: 18px; }
 
-  /* Forms */
   .form-row { grid-template-columns: 1fr; }
-
-  /* Headers */
   .page-header { flex-direction: column; align-items: flex-start; }
   .card-header { align-items: flex-start; }
-
-  /* Tables */
   .table { min-width: 500px; }
 
-  /* Buttons */
   .btn    { padding: 8px 13px; font-size: 12px; }
   .btn-sm { padding: 5px 10px; font-size: 11px; }
 
-  /* Modals */
   .modal { padding: 18px; }
   .modal::before { margin: -18px -18px 18px; }
   .modal-actions .btn { flex: 1; justify-content: center; }
 
-  /* Tank chips */
   .tank-chip, .add-tank-btn { padding: 4px 10px; font-size: 11px; }
 
-  /* Admin */
   .admin-login { margin: 16px; padding: 20px; }
   .admin-login::before { margin: -20px -20px 22px; }
 }
 
 @media (max-width: 480px) {
-  .hero-banner { height: 140px; }
+  .hero-banner { height: 155px; }
   .stat-value  { font-size: 16px; }
   .stat-icon   { width: 36px; height: 36px; }
   .stats-grid  { gap: 6px; }
