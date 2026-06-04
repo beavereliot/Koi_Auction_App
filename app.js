@@ -135,8 +135,8 @@ async function renderDashboard() {
   setContent('<p style="color:#4db8d4;padding:1rem;">Loading dashboard...</p>');
   if (!appSettings.activeYearId) { setContent('<p style="color:#c0392b;padding:1rem;">No active year found. Please go to Admin to create one.</p>'); return; }
 
+  try {
   const [
-    { count: fishCount },
     { count: bidderCount },
     { data: sales },
     { data: misc },
@@ -145,8 +145,7 @@ async function renderDashboard() {
     { data: payments },
     { data: miscItems },
   ] = await Promise.all([
-    sb.from('fish').select('*', { count: 'exact', head: true }).eq('year_id', appSettings.activeYearId),
-    sb.from('bidders').select('*', { count: 'exact', head: true }).eq('year_id', appSettings.activeYearId),
+    sb.from('bidders').select('id', { count: 'exact' }).eq('year_id', appSettings.activeYearId),
     sb.from('sales').select('sale_price, fish_id').eq('year_id', appSettings.activeYearId),
     sb.from('misc_purchases').select('total_price, item_name, bidder_id, quantity').eq('year_id', appSettings.activeYearId),
     sb.from('fish').select('id, donor_id, donor_percent').eq('year_id', appSettings.activeYearId),
@@ -154,6 +153,7 @@ async function renderDashboard() {
     sb.from('payments').select('amount, payment_method').eq('year_id', appSettings.activeYearId),
     sb.from('misc_items').select('name').eq('year_id', appSettings.activeYearId),
   ]);
+  const fishCount = (fish || []).length;
 
   const auctionTotal = (sales || []).reduce((s, r) => s + Number(r.sale_price), 0);
   const miscTotal = (misc || []).reduce((s, r) => s + Number(r.total_price), 0);
@@ -319,6 +319,9 @@ async function renderDashboard() {
       </div>
     </div>
   `);
+  } catch (err) {
+    setContent('<div class="alert alert-error" style="margin:16px;">Error loading dashboard. Please check your connection and try again. <button class="btn btn-sm btn-primary" onclick="renderDashboard()" style="margin-left:8px;">Retry</button></div>');
+  }
 }
 
 function switchDashTab(tab) {
