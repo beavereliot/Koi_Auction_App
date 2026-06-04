@@ -95,6 +95,14 @@ async function loadBidderCache() {
   (data || []).forEach(b => { bidderCache[b.bidder_number] = `${b.first_name} ${b.last_name}`; });
 }
 
+// Entity caches: populated on each render so edit modals never use JSON-in-onclick (breaks on apostrophes)
+let donorDataCache = {};
+let fishDataCache = {};
+let bidderDataCache = {};
+let miscPurchaseDataCache = {};
+let donorTypeDataCache = {};
+let miscItemDataCache = {};
+
 function attachBidderLookup(inputId, displayId) {
   const input = document.getElementById(inputId);
   const display = document.getElementById(displayId);
@@ -135,7 +143,7 @@ async function renderDashboard() {
     sb.from('fish').select('*', { count: 'exact', head: true }).eq('year_id', appSettings.activeYearId),
     sb.from('bidders').select('*', { count: 'exact', head: true }).eq('year_id', appSettings.activeYearId),
     sb.from('sales').select('sale_price, fish_id').eq('year_id', appSettings.activeYearId),
-    sb.from('misc_purchases').select('total_price, item_name, bidder_id').eq('year_id', appSettings.activeYearId),
+    sb.from('misc_purchases').select('total_price, item_name, bidder_id, quantity').eq('year_id', appSettings.activeYearId),
     sb.from('fish').select('id, donor_id, donor_percent').eq('year_id', appSettings.activeYearId),
     sb.from('donors').select('id, first_name, last_name, type').eq('year_id', appSettings.activeYearId),
     sb.from('payments').select('amount, payment_method').eq('year_id', appSettings.activeYearId),
@@ -298,6 +306,8 @@ function switchDashTab(tab) {
 async function renderDonors() {
   setContent('<p style="color:#4db8d4;padding:1rem;">Loading donors...</p>');
   const { data: donors } = await sb.from('donors').select('*').eq('year_id', appSettings.activeYearId).order('last_name');
+  donorDataCache = {};
+  (donors || []).forEach(d => { donorDataCache[d.id] = d; });
   setContent(`
     <div class="page-header">
       <div class="section-label">Koi donors</div>
@@ -317,7 +327,7 @@ async function renderDonors() {
                 <td><span class="badge badge-${d.type.toLowerCase()}">${d.type}</span></td>
                 <td>${d.num_fish}</td>
                 <td>
-                  <button class="btn btn-warning btn-xs" onclick='openEditDonorModal(${JSON.stringify(d)})'>Edit</button>
+                  <button class="btn btn-warning btn-xs" onclick="openEditDonorModal('${d.id}')">Edit</button>
                   <button class="btn btn-danger btn-xs" onclick="deleteDonor('${d.id}')">Delete</button>
                 </td>
               </tr>
@@ -342,7 +352,7 @@ async function renderDonors() {
         <div class="form-group"><label># of fish</label><input id="d-fish" type="number" value="1" min="0" /></div>
         <div class="modal-actions">
           <button class="btn btn-outline btn-sm" onclick="closeModal('donor-modal')">Cancel</button>
-          <button class="btn btn-primary btn-sm" onclick="saveDonor()">Save donor</button>
+          <button class="btn btn-primary btn-sm" id="save-donor-btn" onclick="saveDonor()">Save donor</button>
         </div>
       </div>
     </div>
@@ -362,7 +372,9 @@ async function openDonorModal() {
   await populateDonorTypeSelects();
 }
 
-async function openEditDonorModal(d) {
+async function openEditDonorModal(id) {
+  const d = donorDataCache[id];
+  if (!d) return;
   document.getElementById('donor-modal-title').textContent = 'Edit donor';
   document.getElementById('d-id').value = d.id;
   document.getElementById('d-first').value = d.first_name;
@@ -376,6 +388,9 @@ async function openEditDonorModal(d) {
 }
 
 async function saveDonor() {
+  const btn = document.getElementById('save-donor-btn');
+  if (btn && btn.disabled) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
   const id = document.getElementById('d-id').value;
   const first_name = document.getElementById('d-first').value.trim();
   const last_name = document.getElementById('d-last').value.trim();
@@ -383,13 +398,17 @@ async function saveDonor() {
   const email = document.getElementById('d-email').value.trim();
   const type = document.getElementById('d-type').value;
   const num_fish = parseInt(document.getElementById('d-fish').value) || 0;
-  if (!first_name || !last_name) { alert('Please enter first and last name.'); return; }
+  if (!first_name || !last_name) {
+    alert('Please enter first and last name.');
+    if (btn) { btn.disabled = false; btn.textContent = 'Save donor'; }
+    return;
+  }
   if (id) {
     const { error } = await sb.from('donors').update({ first_name, last_name, phone, email, type, num_fish }).eq('id', id);
-    if (error) { alert('Error: ' + error.message); return; }
+    if (error) { alert('Error: ' + error.message); if (btn) { btn.disabled = false; btn.textContent = 'Save donor'; } return; }
   } else {
     const { error } = await sb.from('donors').insert({ first_name, last_name, phone, email, type, num_fish, year_id: appSettings.activeYearId });
-    if (error) { alert('Error: ' + error.message); return; }
+    if (error) { alert('Error: ' + error.message); if (btn) { btn.disabled = false; btn.textContent = 'Save donor'; } return; }
   }
   closeModal('donor-modal');
   renderDonors();
@@ -429,6 +448,8 @@ async function renderFish() {
   }
 
   allDonorsForFish = donors || [];
+  fishDataCache = {};
+  (fish || []).forEach(f => { fishDataCache[f.id] = f; });
   const tankFish = (tankLetter) => fish ? fish.filter(f => f.tanks?.letter === tankLetter) : [];
   const allTanks = tanks || [];
   const noDonors = allDonorsForFish.length === 0;
@@ -490,7 +511,7 @@ async function renderFish() {
                             <td>${sold ? `<span class="badge badge-sold">Sold $${f.sales[0].sale_price}</span>` : '<span class="badge badge-unsold">Available</span>'}</td>
                             <td>${paymentBadge}</td>
                             <td>
-                              <button class="btn btn-warning btn-xs" onclick='openEditFishModal(${JSON.stringify(f)}, "${tank.id}")'>Edit</button>
+                              <button class="btn btn-warning btn-xs" onclick="openEditFishModal('${f.id}')">Edit</button>
                               <button class="btn btn-danger btn-xs" onclick="deleteFish('${f.id}')">Delete</button>
                             </td>
                           </tr>`;
@@ -518,7 +539,7 @@ async function renderFish() {
         <div class="form-group"><label>Description (optional)</label><input id="t-desc" type="text" placeholder="e.g. Large koi" /></div>
         <div class="modal-actions">
           <button class="btn btn-outline btn-sm" onclick="closeModal('tank-modal')">Cancel</button>
-          <button class="btn btn-primary btn-sm" onclick="saveTank()">Create tank</button>
+          <button class="btn btn-primary btn-sm" id="save-tank-btn" onclick="saveTank()">Create tank</button>
         </div>
       </div>
     </div>
@@ -538,7 +559,7 @@ async function renderFish() {
         </div>
         <div class="modal-actions">
           <button class="btn btn-outline btn-sm" onclick="closeModal('fish-modal')">Cancel</button>
-          <button class="btn btn-primary btn-sm" onclick="saveFish()" ${noDonors ? 'disabled' : ''}>Save fish</button>
+          <button class="btn btn-primary btn-sm" id="save-fish-btn" onclick="saveFish()" ${noDonors ? 'disabled' : ''}>Save fish</button>
         </div>
       </div>
     </div>
@@ -588,9 +609,11 @@ async function openFishModal(tankId, tankLetter) {
   }
 }
 
-async function openEditFishModal(f, tankId) {
+async function openEditFishModal(id) {
+  const f = fishDataCache[id];
+  if (!f) return;
   document.getElementById('fish-modal-title').textContent = 'Edit fish';
-  document.getElementById('fish-modal-tank-id').value = tankId;
+  document.getElementById('fish-modal-tank-id').value = f.tank_id;
   document.getElementById('f-id').value = f.id;
   document.getElementById('f-num').value = f.fish_number;
   document.getElementById('f-desc').value = f.description;
@@ -608,24 +631,38 @@ async function openEditFishModal(f, tankId) {
 }
 
 async function saveTank() {
+  const btn = document.getElementById('save-tank-btn');
+  if (btn && btn.disabled) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
   const letter = document.getElementById('t-letter').value.trim().toUpperCase();
   const description = document.getElementById('t-desc').value.trim();
-  if (!letter) { alert('Please enter a tank letter.'); return; }
+  if (!letter) {
+    alert('Please enter a tank letter.');
+    if (btn) { btn.disabled = false; btn.textContent = 'Create tank'; }
+    return;
+  }
   const { error } = await sb.from('tanks').insert({ letter, description, year_id: appSettings.activeYearId });
-  if (error) { alert('Error: ' + error.message); return; }
+  if (error) { alert('Error: ' + error.message); if (btn) { btn.disabled = false; btn.textContent = 'Create tank'; } return; }
   closeModal('tank-modal');
   activeTank = letter;
   renderFish();
 }
 
 async function saveFish() {
+  const btn = document.getElementById('save-fish-btn');
+  if (btn && btn.disabled) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
   const id = document.getElementById('f-id').value;
   const tank_id = document.getElementById('fish-modal-tank-id').value;
   const fish_number = parseInt(document.getElementById('f-num').value);
   const description = document.getElementById('f-desc').value.trim();
   const donor_id = document.getElementById('f-donor').value;
   const type = document.getElementById('f-type').value;
-  if (!fish_number || fish_number < 1 || !description) { alert('Please fill in a valid fish # and description.'); return; }
+  if (!fish_number || fish_number < 1 || !description) {
+    alert('Please fill in a valid fish # and description.');
+    if (btn) { btn.disabled = false; btn.textContent = 'Save fish'; }
+    return;
+  }
 
   const { data: dtData } = await sb.from('donor_types').select('percentage').eq('name', type).eq('year_id', appSettings.activeYearId).single();
   const donor_percent = dtData ? Number(dtData.percentage) : 0;
@@ -633,14 +670,18 @@ async function saveFish() {
   if (id) {
     const { error } = await sb.from('fish').update({ fish_number, description, donor_id, type, donor_percent }).eq('id', id);
     if (error) {
-      if (error.code === '23505') { alert('A fish with that number already exists in this tank.'); return; }
-      alert('Error: ' + error.message); return;
+      if (error.code === '23505') { alert('A fish with that number already exists in this tank.'); }
+      else { alert('Error: ' + error.message); }
+      if (btn) { btn.disabled = false; btn.textContent = 'Save fish'; }
+      return;
     }
   } else {
     const { error } = await sb.from('fish').insert({ tank_id, fish_number, description, donor_id, type, donor_percent, year_id: appSettings.activeYearId });
     if (error) {
-      if (error.code === '23505') { alert('A fish with that number already exists in this tank.'); return; }
-      alert('Error: ' + error.message); return;
+      if (error.code === '23505') { alert('A fish with that number already exists in this tank.'); }
+      else { alert('Error: ' + error.message); }
+      if (btn) { btn.disabled = false; btn.textContent = 'Save fish'; }
+      return;
     }
   }
   closeModal('fish-modal');
@@ -648,7 +689,15 @@ async function saveFish() {
 }
 
 async function deleteFish(id) {
-  if (!window.confirm('Delete this fish? This cannot be undone.')) return;
+  const { data: existingSale } = await sb.from('sales').select('id, sale_price, bidder_id').eq('fish_id', id);
+  if (existingSale && existingSale.length > 0) {
+    const sale = existingSale[0];
+    const { data: bidder } = await sb.from('bidders').select('first_name, last_name, bidder_number').eq('id', sale.bidder_id).single();
+    const bidderInfo = bidder ? `Bidder #${bidder.bidder_number} (${bidder.first_name} ${bidder.last_name})` : 'the buyer';
+    if (!window.confirm(`Warning: This fish was sold for $${sale.sale_price} to ${bidderInfo}. Deleting it removes the sale record but NOT any payments already recorded — ${bidderInfo} may appear as having overpaid. Continue?`)) return;
+  } else {
+    if (!window.confirm('Delete this fish? This cannot be undone.')) return;
+  }
   await sb.from('sales').delete().eq('fish_id', id);
   const { error } = await sb.from('fish').delete().eq('id', id);
   if (error) { alert('Error: ' + error.message); return; }
@@ -656,10 +705,19 @@ async function deleteFish(id) {
 }
 
 async function deleteTank(id) {
-  if (!window.confirm('Delete this tank and ALL fish in it? This cannot be undone.')) return;
   const { data: fishInTank } = await sb.from('fish').select('id').eq('tank_id', id);
-  for (const f of (fishInTank || [])) {
-    await sb.from('sales').delete().eq('fish_id', f.id);
+  const fishIds = (fishInTank || []).map(f => f.id);
+  let soldCount = 0;
+  if (fishIds.length > 0) {
+    const { data: soldFish } = await sb.from('sales').select('id').in('fish_id', fishIds);
+    soldCount = soldFish ? soldFish.length : 0;
+  }
+  const soldWarning = soldCount > 0
+    ? ` ${soldCount} fish in this tank have already been sold — deleting will remove those sale records but NOT any payments already taken, leaving buyers appearing overpaid.`
+    : '';
+  if (!window.confirm(`Delete this tank and ALL ${fishInTank?.length || 0} fish in it? This cannot be undone.${soldWarning}`)) return;
+  for (const fishId of fishIds) {
+    await sb.from('sales').delete().eq('fish_id', fishId);
   }
   await sb.from('fish').delete().eq('tank_id', id);
   const { error } = await sb.from('tanks').delete().eq('id', id);
@@ -678,6 +736,8 @@ async function renderBidders() {
   const { data: allMisc } = await sb.from('misc_purchases').select('bidder_id, total_price').eq('year_id', appSettings.activeYearId);
   const { data: allPayments } = await sb.from('payments').select('bidder_id, amount').eq('year_id', appSettings.activeYearId);
 
+  bidderDataCache = {};
+  (bidders || []).forEach(b => { bidderDataCache[b.id] = b; });
   const nextBidderNum = bidders && bidders.length > 0 ? Math.max(...bidders.map(b => b.bidder_number)) + 1 : 1;
 
   function getBidderTotals(bidderId) {
@@ -715,7 +775,7 @@ async function renderBidders() {
                 <td><span class="badge ${b.is_member ? 'badge-member' : ''}">${b.is_member ? 'Yes' : 'No'}</span></td>
                 <td>${getStatusBadge(b)}</td>
                 <td>
-                  <button class="btn btn-warning btn-xs" onclick='openEditBidderModal(${JSON.stringify(b)})'>Edit</button>
+                  <button class="btn btn-warning btn-xs" onclick="openEditBidderModal('${b.id}')">Edit</button>
                   <button class="btn btn-danger btn-xs" onclick="deleteBidder('${b.id}')">Delete</button>
                 </td>
               </tr>
@@ -744,7 +804,7 @@ async function renderBidders() {
         </div>
         <div class="modal-actions">
           <button class="btn btn-outline btn-sm" onclick="closeModal('bidder-modal')">Cancel</button>
-          <button class="btn btn-primary btn-sm" onclick="saveBidder()">Save</button>
+          <button class="btn btn-primary btn-sm" id="save-bidder-btn" onclick="saveBidder()">Save</button>
         </div>
       </div>
     </div>
@@ -765,7 +825,9 @@ function openBidderModal(nextNum) {
   document.getElementById('bidder-modal').classList.add('open');
 }
 
-function openEditBidderModal(b) {
+function openEditBidderModal(id) {
+  const b = bidderDataCache[id];
+  if (!b) return;
   document.getElementById('bidder-modal-title').textContent = 'Edit bidder';
   document.getElementById('b-id').value = b.id;
   document.getElementById('b-num').value = b.bidder_number;
@@ -779,6 +841,9 @@ function openEditBidderModal(b) {
 }
 
 async function saveBidder() {
+  const btn = document.getElementById('save-bidder-btn');
+  if (btn && btn.disabled) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
   const id = document.getElementById('b-id').value;
   const bidderNumEl = document.getElementById('b-num');
   bidderNumEl.readOnly = false;
@@ -788,15 +853,28 @@ async function saveBidder() {
   const phone = document.getElementById('b-phone').value.trim();
   const email = document.getElementById('b-email').value.trim();
   const is_member = document.getElementById('b-member').value === 'true';
-  if (!bidder_number || !first_name || !last_name) { alert('Please fill in bidder #, first and last name.'); return; }
+  if (!bidder_number || !first_name || !last_name) {
+    alert('Please fill in bidder #, first and last name.');
+    if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+    return;
+  }
   if (id) {
     const { error } = await sb.from('bidders').update({ first_name, last_name, phone, email, is_member }).eq('id', id);
-    if (error) { alert('Error: ' + error.message); return; }
+    if (error) { alert('Error: ' + error.message); if (btn) { btn.disabled = false; btn.textContent = 'Save'; } return; }
   } else {
     const { error } = await sb.from('bidders').insert({ bidder_number, first_name, last_name, phone, email, is_member, year_id: appSettings.activeYearId });
     if (error) {
-      if (error.code === '23505') { alert('A bidder with that number already exists.'); return; }
-      alert('Error: ' + error.message); return;
+      if (error.code === '23505') {
+        const { data: latest } = await sb.from('bidders').select('bidder_number').eq('year_id', appSettings.activeYearId).order('bidder_number', { ascending: false }).limit(1);
+        const nextNum = latest && latest.length > 0 ? latest[0].bidder_number + 1 : bidder_number + 1;
+        alert(`Bidder #${bidder_number} was just registered by another volunteer. Next available number is #${nextNum}.`);
+        document.getElementById('b-num').value = nextNum;
+        document.getElementById('b-num').readOnly = false;
+      } else {
+        alert('Error: ' + error.message);
+      }
+      if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+      return;
     }
   }
   closeModal('bidder-modal');
@@ -919,7 +997,7 @@ async function renderScribe() {
         <div class="form-group"><label>Sale price ($)</label><input id="es-price" type="number" min="0.01" step="0.01" /></div>
         <div class="modal-actions">
           <button class="btn btn-outline btn-sm" onclick="closeModal('edit-sale-modal')">Cancel</button>
-          <button class="btn btn-primary btn-sm" onclick="saveEditSale()">Save</button>
+          <button class="btn btn-primary btn-sm" id="save-edit-sale-btn" onclick="saveEditSale()">Save</button>
         </div>
       </div>
     </div>
@@ -979,14 +1057,25 @@ function openEditSaleModal(id, fishLabel, bidderNum, price) {
 }
 
 async function saveEditSale() {
+  const btn = document.getElementById('save-edit-sale-btn');
+  if (btn && btn.disabled) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
   const id = document.getElementById('es-id').value;
   const bidderNum = parseInt(document.getElementById('es-bidder').value);
   const salePrice = parseFloat(document.getElementById('es-price').value);
-  if (!bidderNum || !salePrice || salePrice <= 0) { alert('Please fill in all fields with valid values.'); return; }
+  if (!bidderNum || !salePrice || salePrice <= 0) {
+    alert('Please fill in all fields with valid values.');
+    if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+    return;
+  }
   const { data: bidderData } = await sb.from('bidders').select('id').eq('bidder_number', bidderNum).eq('year_id', appSettings.activeYearId).single();
-  if (!bidderData) { alert('Bidder not found.'); return; }
+  if (!bidderData) {
+    alert('Bidder not found.');
+    if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+    return;
+  }
   const { error } = await sb.from('sales').update({ bidder_id: bidderData.id, sale_price: salePrice }).eq('id', id);
-  if (error) { alert('Error: ' + error.message); return; }
+  if (error) { alert('Error: ' + error.message); if (btn) { btn.disabled = false; btn.textContent = 'Save'; } return; }
   closeModal('edit-sale-modal');
   renderScribe();
 }
@@ -1022,7 +1111,11 @@ async function recordSale() {
 
   const { error } = await sb.from('sales').insert({ fish_id: fishId, bidder_id: bidderData.id, sale_price: salePrice, year_id: appSettings.activeYearId });
   if (error) {
-    msg.innerHTML = '<div class="alert alert-error">Error: ' + error.message + '</div>';
+    if (error.code === '23505') {
+      msg.innerHTML = '<div class="alert alert-error">This fish was just sold by another volunteer. Reload the fish list.</div>';
+    } else {
+      msg.innerHTML = '<div class="alert alert-error">Error: ' + error.message + '</div>';
+    }
     btn.disabled = false; btn.textContent = '✓ Record sale'; return;
   }
 
@@ -1095,8 +1188,14 @@ async function loadCheckout() {
 
   if (!bidder.is_member && membershipShownForBidder !== bidder.id) {
     membershipShownForBidder = bidder.id;
-    document.getElementById('membership-modal').dataset.bidderId = bidder.id;
-    document.getElementById('membership-modal').classList.add('open');
+    const { data: existingMembership } = await sb.from('misc_purchases')
+      .select('id').eq('bidder_id', bidder.id)
+      .in('item_name', ['Family Membership', 'Individual Membership'])
+      .limit(1);
+    if (!existingMembership || existingMembership.length === 0) {
+      document.getElementById('membership-modal').dataset.bidderId = bidder.id;
+      document.getElementById('membership-modal').classList.add('open');
+    }
   }
 
   const { data: sales } = await sb.from('sales').select('sale_price, fish(description, fish_number, tanks(letter))').eq('bidder_id', bidder.id);
@@ -1188,7 +1287,7 @@ async function loadCheckout() {
           <input id="co-ref" type="text" placeholder="Optional reference" />
         </div>
         <div style="display:flex;gap:8px;margin-top:8px;">
-          <button class="btn btn-primary" style="flex:1;justify-content:center;" onclick="recordPayment('${bidder.id}',${grandTotal})">✓ Record payment</button>
+          <button class="btn btn-primary" id="record-payment-btn" style="flex:1;justify-content:center;" onclick="recordPayment('${bidder.id}',${grandTotal})">✓ Record payment</button>
           <button class="btn btn-outline" style="flex:1;justify-content:center;" onclick="loadCheckout()">↻ Refresh</button>
           <button class="btn btn-outline" style="flex:1;justify-content:center;" onclick="printReceipt('${bidder.id}')">🖨️ Print receipt</button>
         </div>`}
@@ -1215,13 +1314,35 @@ async function addMembershipFromCheckout() {
 }
 
 async function recordPayment(bidderId, grandTotal) {
+  const btn = document.getElementById('record-payment-btn');
+  if (btn && btn.disabled) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
   const amount = parseFloat(document.getElementById('co-amount').value);
   const payment_method = document.getElementById('co-payment').value;
   const payment_reference = document.getElementById('co-ref').value.trim();
   const msg = document.getElementById('checkout-msg');
-  if (!amount || amount <= 0) { msg.innerHTML = '<div class="alert alert-error">Please enter a valid payment amount.</div>'; return; }
+  if (!amount || amount <= 0) {
+    msg.innerHTML = '<div class="alert alert-error">Please enter a valid payment amount.</div>';
+    if (btn) { btn.disabled = false; btn.textContent = '✓ Record payment'; }
+    return;
+  }
+  // Check for overpayment
+  const { data: existingPayments } = await sb.from('payments').select('amount').eq('bidder_id', bidderId);
+  const alreadyPaid = (existingPayments || []).reduce((s, r) => s + Number(r.amount), 0);
+  const remaining = grandTotal - alreadyPaid;
+  if (amount > remaining + 0.01) {
+    const confirmed = window.confirm(`Warning: This payment ($${amount.toFixed(2)}) exceeds the remaining balance ($${remaining.toFixed(2)}). Record it anyway?`);
+    if (!confirmed) {
+      if (btn) { btn.disabled = false; btn.textContent = '✓ Record payment'; }
+      return;
+    }
+  }
   const { error: paymentError } = await sb.from('payments').insert({ bidder_id: bidderId, amount, payment_method, payment_reference, year_id: appSettings.activeYearId });
-  if (paymentError) { msg.innerHTML = '<div class="alert alert-error">Error: ' + paymentError.message + '</div>'; return; }
+  if (paymentError) {
+    msg.innerHTML = '<div class="alert alert-error">Error: ' + paymentError.message + '</div>';
+    if (btn) { btn.disabled = false; btn.textContent = '✓ Record payment'; }
+    return;
+  }
   const { data: allPayments } = await sb.from('payments').select('amount').eq('bidder_id', bidderId);
   const totalPaid = (allPayments || []).reduce((s, r) => s + Number(r.amount), 0);
   const isPaid = totalPaid >= grandTotal - 0.01;
@@ -1293,6 +1414,8 @@ async function renderMisc() {
     sb.from('misc_items').select('*').eq('year_id', appSettings.activeYearId).order('name'),
     sb.from('misc_purchases').select('*, bidders(first_name, last_name, bidder_number)').eq('year_id', appSettings.activeYearId).order('created_at', { ascending: false }),
   ]);
+  miscPurchaseDataCache = {};
+  (purchases || []).forEach(p => { miscPurchaseDataCache[p.id] = p; });
 
   const selectedItem = items && items.length > 0 ? items[0] : null;
   const isQtyBased = selectedItem ? selectedItem.is_quantity_based : true;
@@ -1336,7 +1459,7 @@ async function renderMisc() {
                 <td>${p.quantity}</td>
                 <td style="text-align:right;font-weight:bold;">$${p.total_price}</td>
                 <td>
-                  <button class="btn btn-warning btn-xs" onclick='openEditMiscModal(${JSON.stringify(p)})'>Edit</button>
+                  <button class="btn btn-warning btn-xs" onclick="openEditMiscModal('${p.id}')">Edit</button>
                   <button class="btn btn-danger btn-xs" onclick="deleteMiscPurchase('${p.id}')">Delete</button>
                 </td>
               </tr>
@@ -1377,7 +1500,9 @@ function updateMiscQtyLabel() {
   }
 }
 
-function openEditMiscModal(p) {
+function openEditMiscModal(id) {
+  const p = miscPurchaseDataCache[id];
+  if (!p) return;
   document.getElementById('me-id').value = p.id;
   document.getElementById('me-name').value = p.item_name;
   document.getElementById('me-qty').value = p.quantity;
@@ -1409,11 +1534,15 @@ async function deleteMiscPurchase(id) {
 async function saveMiscPurchase() {
   const bidderNum = parseInt(document.getElementById('m-bidder').value);
   const select = document.getElementById('m-item');
+  const msg = document.getElementById('misc-msg');
+  if (!select || select.options.length === 0 || select.selectedIndex < 0) {
+    msg.innerHTML = '<div class="alert alert-error">No items available. Please add items in the Admin panel first.</div>';
+    return;
+  }
   const selectedOption = select.options[select.selectedIndex];
   const item_name = selectedOption.text.split(' — ')[0];
   const isQtyBased = selectedOption.dataset.qtyBased === 'true';
   const qtyVal = parseFloat(document.getElementById('m-qty').value);
-  const msg = document.getElementById('misc-msg');
 
   if (!bidderNum) { msg.innerHTML = '<div class="alert alert-error">Please enter a bidder number.</div>'; return; }
   if (!qtyVal || qtyVal <= 0) { msg.innerHTML = '<div class="alert alert-error">Please enter a valid quantity or amount.</div>'; return; }
@@ -1471,6 +1600,10 @@ async function renderAdminPanel() {
   const { data: years } = await sb.from('settings').select('*').order('year', { ascending: false });
   const { data: miscItems } = await sb.from('misc_items').select('*').eq('year_id', appSettings.activeYearId).order('name');
   const { data: donorTypes } = await sb.from('donor_types').select('*').eq('year_id', appSettings.activeYearId).order('name');
+  donorTypeDataCache = {};
+  (donorTypes || []).forEach(dt => { donorTypeDataCache[dt.id] = dt; });
+  miscItemDataCache = {};
+  (miscItems || []).forEach(i => { miscItemDataCache[i.id] = i; });
 
   const yearsHtml = (years || []).map(y => {
     const isActive = y.id === appSettings.activeYearId;
@@ -1491,7 +1624,7 @@ async function renderAdminPanel() {
               <td>$${Number(i.unit_price).toFixed(2)}</td>
               <td>${i.is_quantity_based ? 'Qty based' : 'Fixed amount'}</td>
               <td>
-                <button class="btn btn-warning btn-xs" onclick='openEditMiscItemModal(${JSON.stringify(i)})'>Edit</button>
+                <button class="btn btn-warning btn-xs" onclick="openEditMiscItemModal('${i.id}')">Edit</button>
                 <button class="btn btn-danger btn-xs" onclick="deleteMiscItem('${i.id}')">Delete</button>
               </td>
             </tr>
@@ -1509,7 +1642,7 @@ async function renderAdminPanel() {
               <td>${dt.name}</td>
               <td>${(Number(dt.percentage) * 100).toFixed(0)}%</td>
               <td>
-                <button class="btn btn-warning btn-xs" onclick='openEditDonorTypeModal(${JSON.stringify(dt)})'>Edit</button>
+                <button class="btn btn-warning btn-xs" onclick="openEditDonorTypeModal('${dt.id}')">Edit</button>
                 <button class="btn btn-danger btn-xs" onclick="deleteDonorType('${dt.id}')">Delete</button>
               </td>
             </tr>
@@ -1673,7 +1806,9 @@ function openDonorTypeModal() {
   document.getElementById('donor-type-modal').classList.add('open');
 }
 
-function openEditDonorTypeModal(dt) {
+function openEditDonorTypeModal(id) {
+  const dt = donorTypeDataCache[id];
+  if (!dt) return;
   document.getElementById('donor-type-modal-title').textContent = 'Edit donor type';
   document.getElementById('dt-id').value = dt.id;
   document.getElementById('dt-name').value = dt.name;
@@ -1721,7 +1856,9 @@ function openMiscItemModal() {
   document.getElementById('misc-item-modal').classList.add('open');
 }
 
-function openEditMiscItemModal(i) {
+function openEditMiscItemModal(id) {
+  const i = miscItemDataCache[id];
+  if (!i) return;
   document.getElementById('misc-item-modal-title').textContent = 'Edit misc item';
   document.getElementById('mi-id').value = i.id;
   document.getElementById('mi-name').value = i.name;
@@ -1966,14 +2103,14 @@ async function exportCSV(table) {
     let currentRow = 4;
     for (const donor of (donors || [])) {
       const donorFish = (fish || []).filter(f => f.donor_id === donor.id);
-      const percent = donor.type === 'Pickup' ? 0.40 : donor.type === 'Dropoff' ? 0.50 : 0;
-      const percentLabel = `${(percent * 100).toFixed(0)}%`;
       const donorName = `${donor.first_name} ${donor.last_name}`;
       let donorTotal = 0; let donorPayout = 0;
       for (const f of donorFish) {
         const sold = f.sales && f.sales.length > 0;
         const salePrice = sold ? Number(f.sales[0].sale_price) : 0;
-        const fishPayout = salePrice * percent;
+        const fishPercent = Number(f.donor_percent || 0);
+        const fishPayout = salePrice * fishPercent;
+        const percentLabel = `${(fishPercent * 100).toFixed(0)}%`;
         donorTotal += salePrice; donorPayout += fishPayout;
         const row = [donorName, donor.type, percentLabel, `${f.tanks?.letter || ''}${f.fish_number}`, f.description, sold ? salePrice : '', sold && fishPayout > 0 ? fishPayout : ''];
         const bg = sold ? green : (currentRow % 2 === 0 ? white : lightTeal);
@@ -1981,7 +2118,8 @@ async function exportCSV(table) {
         row.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r: currentRow - 1, c: ci }); ws[addr].s = cellStyle(bg, false, [5, 6].includes(ci) ? 'right' : 'left'); });
         currentRow++;
       }
-      const summaryRow = [donorName, donor.type, percentLabel, '', 'TOTAL OWED TO DONOR', donorTotal > 0 ? donorTotal : '', donorPayout > 0 ? donorPayout : ''];
+      const summaryPercentLabel = donorFish.length > 0 ? `${(Number(donorFish[0].donor_percent || 0) * 100).toFixed(0)}%` : '—';
+      const summaryRow = [donorName, donor.type, summaryPercentLabel, '', 'TOTAL OWED TO DONOR', donorTotal > 0 ? donorTotal : '', donorPayout > 0 ? donorPayout : ''];
       XLSX.utils.sheet_add_aoa(ws, [summaryRow], { origin: { r: currentRow - 1, c: 0 } });
       summaryRow.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r: currentRow - 1, c: ci }); ws[addr] = makeCell(summaryRow[ci], cellStyle(amber, true, [5, 6].includes(ci) ? 'right' : 'left')); });
       currentRow++;
@@ -1991,9 +2129,7 @@ async function exportCSV(table) {
       currentRow++;
     }
     const grandTotal = (fish || []).filter(f => f.sales && f.sales.length > 0).reduce((s, f) => {
-      const donor = (donors || []).find(d => d.id === f.donor_id);
-      const percent = donor?.type === 'Pickup' ? 0.40 : donor?.type === 'Dropoff' ? 0.50 : 0;
-      return s + Number(f.sales[0].sale_price) * percent;
+      return s + Number(f.sales[0].sale_price) * Number(f.donor_percent || 0);
     }, 0);
     const grandRow = ['', '', '', '', 'GRAND TOTAL OWED TO ALL DONORS', '', grandTotal];
     XLSX.utils.sheet_add_aoa(ws, [grandRow], { origin: { r: currentRow - 1, c: 0 } });
@@ -2045,9 +2181,58 @@ function getActivePage() {
   return document.querySelector('.nav-item.active')?.dataset?.page || 'dashboard';
 }
 
+function captureScribeState() {
+  return {
+    tankId:  document.getElementById('s-tank')?.value       || '',
+    fishId:  document.getElementById('s-fish-select')?.value || '',
+    bidder:  document.getElementById('s-bidder')?.value      || '',
+    price:   document.getElementById('s-price')?.value       || '',
+  };
+}
+
+async function restoreScribeState(state) {
+  if (!state.tankId) return;
+  const tank = document.getElementById('s-tank');
+  if (!tank) return;
+  tank.value = state.tankId;
+  await loadScribeFishDropdown();
+  const fishSel = document.getElementById('s-fish-select');
+  if (fishSel && state.fishId) {
+    fishSel.value = state.fishId;
+    const entryFields = document.getElementById('s-entry-fields');
+    if (entryFields) entryFields.style.display = fishSel.value ? 'block' : 'none';
+  }
+  const bidderEl = document.getElementById('s-bidder');
+  const priceEl  = document.getElementById('s-price');
+  if (bidderEl) bidderEl.value = state.bidder;
+  if (priceEl)  priceEl.value  = state.price;
+  if (state.bidder) {
+    const name    = bidderCache[parseInt(state.bidder)];
+    const display = document.getElementById('s-bidder-name');
+    if (display) {
+      display.textContent = name || 'Not found';
+      display.className   = 'bidder-name-display' + (name ? '' : ' not-found');
+    }
+  }
+}
+
 async function silentRefresh() {
   if (isModalOpen()) return;
   if (isUserTyping()) return;
+
+  // Detect active year change from another tab
+  const { data: activeYear } = await sb.from('settings').select('id, year, title, admin_password').eq('is_active', true).single();
+  if (activeYear && activeYear.id !== appSettings.activeYearId) {
+    appSettings.activeYearId    = activeYear.id;
+    appSettings.auctionYear     = activeYear.year;
+    appSettings.auctionTitle    = activeYear.title;
+    appSettings.adminPassword   = activeYear.admin_password || 'admin1234';
+    document.getElementById('auction-subtitle').textContent = activeYear.title;
+    await loadBidderCache();
+  }
+
+  // Always refresh bidder cache so name lookups stay current
+  await loadBidderCache();
 
   const scrollX = window.scrollX;
   const scrollY = window.scrollY;
@@ -2058,8 +2243,22 @@ async function silentRefresh() {
     case 'donors':    await renderDonors();    break;
     case 'fish':      await renderFish();      break;
     case 'bidders':   await renderBidders();   break;
-    case 'scribe':    await renderScribe();    break;
+    case 'scribe': {
+      const scribeState = captureScribeState();
+      await renderScribe();
+      await restoreScribeState(scribeState);
+      break;
+    }
     case 'misc':      await renderMisc();      break;
+    case 'checkout': {
+      // Only silently re-pull the current bidder; don't reset the lookup form
+      const resultDiv    = document.getElementById('checkout-result');
+      const bidderInput  = document.getElementById('co-bidder-num');
+      if (resultDiv?.innerHTML.trim() && bidderInput?.value) {
+        await loadCheckout();
+      }
+      break;
+    }
   }
 
   window.scrollTo(scrollX, scrollY);
