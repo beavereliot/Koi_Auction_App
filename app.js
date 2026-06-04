@@ -248,32 +248,50 @@ async function renderDashboard() {
   setContent(`
     <div class="stats-grid">
       <div class="stat-card">
-        <div class="stat-label">Total fish</div>
-        <div class="stat-value">${fishCount || 0}</div>
+        <img class="stat-icon" src="assets/newicons/totalfish.png" alt="" />
+        <div class="stat-text">
+          <div class="stat-label">Total fish</div>
+          <div class="stat-value">${fishCount || 0}</div>
+        </div>
       </div>
-      <div class="stat-card" style="border-left-color:#e8a0b0;">
-        <div class="stat-label">Bidders</div>
-        <div class="stat-value">${bidderCount || 0}</div>
+      <div class="stat-card">
+        <img class="stat-icon" src="assets/newicons/bidders.png" alt="" />
+        <div class="stat-text">
+          <div class="stat-label">Bidders</div>
+          <div class="stat-value">${bidderCount || 0}</div>
+        </div>
       </div>
-      <div class="stat-card" style="border-left-color:#4db87a;">
-        <div class="stat-label">Auction sales</div>
-        <div class="stat-value">$${auctionTotal.toFixed(0)}</div>
+      <div class="stat-card">
+        <img class="stat-icon" src="assets/newicons/auction.png" alt="" />
+        <div class="stat-text">
+          <div class="stat-label">Auction sales</div>
+          <div class="stat-value">$${auctionTotal.toFixed(0)}</div>
+        </div>
       </div>
-      <div class="stat-card" style="border-left-color:#e8c44a;">
-        <div class="stat-label">Misc sales</div>
-        <div class="stat-value">$${miscTotal.toFixed(0)}</div>
+      <div class="stat-card">
+        <img class="stat-icon" src="assets/newicons/misc.png" alt="" />
+        <div class="stat-text">
+          <div class="stat-label">Misc sales</div>
+          <div class="stat-value">$${miscTotal.toFixed(0)}</div>
+        </div>
       </div>
-      <div class="stat-card" style="border-left-color:#c0392b;">
-        <div class="stat-label">Donor payout</div>
-        <div class="stat-value">$${donorAuctionPayout.toFixed(0)}</div>
+      <div class="stat-card">
+        <img class="stat-icon" src="assets/newicons/donor.png" alt="" />
+        <div class="stat-text">
+          <div class="stat-label">Donor payout</div>
+          <div class="stat-value">$${donorAuctionPayout.toFixed(0)}</div>
+        </div>
       </div>
-      <div class="stat-card" style="border-left-color:#27ae60;">
-        <div class="stat-label">Club portion</div>
-        <div class="stat-value">$${clubAuctionPortion.toFixed(0)}</div>
+      <div class="stat-card">
+        <img class="stat-icon" src="assets/newicons/club.png" alt="" />
+        <div class="stat-text">
+          <div class="stat-label">Club portion</div>
+          <div class="stat-value">$${clubAuctionPortion.toFixed(0)}</div>
+        </div>
       </div>
     </div>
 
-    <div class="card">
+    <div class="card card-bamboo">
       <div class="card-header"><div class="card-header-title">Grand total</div></div>
       <div class="card-body">
         <div class="total-row"><span>Auction sales</span><span>$${auctionTotal.toFixed(2)}</span></div>
@@ -285,7 +303,7 @@ async function renderDashboard() {
       </div>
     </div>
 
-    <div class="card">
+    <div class="card card-temple">
       <div class="card-header"><div class="card-header-title">Totals</div></div>
       <div class="card-body">
         ${totalsTabsHtml}
@@ -2281,27 +2299,43 @@ function renderManual() {
     <div id="manual-accordion"></div>
   `);
 
+  const mi = (svgPath) => `<svg class="manual-icon" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">${svgPath}</svg>`;
+  const manualIcons = {
+    overview:  mi('<rect x="2" y="2" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5" fill="none"/><rect x="11" y="2" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5" fill="none"/><rect x="2" y="11" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5" fill="none"/><rect x="11" y="11" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5" fill="none"/>'),
+    donors:    mi('<circle cx="10" cy="6" r="3.5" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M3 18.5c0-3.8 3.1-6.5 7-6.5s7 2.7 7 6.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/><path d="M15 9.5h2.5M16.25 8.25v2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>'),
+    fish:      mi('<path d="M2 10c3-5.5 9.5-7 14-4.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/><path d="M2 10c3 5.5 9.5 7 14 4.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/><path d="M16 5.5l3.5-3-1.5 5" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M16 14.5l3.5 3-1.5-5" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6.5" cy="10" r="1.5" fill="currentColor"/>'),
+    bidders:   mi('<circle cx="7" cy="6" r="3" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M2 18c0-3.2 2.2-5.5 5-5.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/><rect x="11" y="10.5" width="7.5" height="6" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/><line x1="13" y1="13.5" x2="17" y2="13.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><line x1="13" y1="15.2" x2="15.5" y2="15.2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>'),
+    scribe:    mi('<path d="M3.5 17l2.5-7.5L15 2l3 3-9 7.5-5.5 4.5z" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linejoin="round"/><path d="M12 5l3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M3.5 17q1.5 1 2.5 0" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round"/>'),
+    misc:      mi('<path d="M7.5 8V6a2.5 2.5 0 015 0v2" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/><path d="M3.5 8h13l-1.2 9.5H4.7L3.5 8z" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linejoin="round"/>'),
+    checkout:  mi('<path d="M5 3h10a1 1 0 011 1v12.5l-2-1-2 1-2-1-2 1-2-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linejoin="round"/><line x1="7.5" y1="7.5" x2="12.5" y2="7.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><line x1="7.5" y1="10.5" x2="12.5" y2="10.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><line x1="7.5" y1="13" x2="10.5" y2="13" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>'),
+    admin:     mi('<path d="M10 17c-4-1-6-4-6-7 0-2 .8-3.5 2-4.5.3 2.5 1.8 5.2 4 6.5z" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linejoin="round"/><path d="M10 17c4-1 6-4 6-7 0-2-.8-3.5-2-4.5-.3 2.5-1.8 5.2-4 6.5z" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linejoin="round"/><path d="M10 17c-2.5-2.2-3.5-5-3-7.5.3-1.2 1-2 1.8-2.5.2 2 0 4 .2 5.5.2 1.5.7 3 1 4.5z" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linejoin="round"/><path d="M10 17c2.5-2.2 3.5-5 3-7.5-.3-1.2-1-2-1.8-2.5-.2 2 0 4-.2 5.5-.2 1.5-.7 3-1 4.5z" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linejoin="round"/>'),
+    help:      mi('<circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M10 11V10c1.8 0 3-1 3-2.5S11.8 5 10 5 7 6 7 7.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/><circle cx="10" cy="14.5" r="1" fill="currentColor"/>'),
+  };
+
   const sections = [
-    { title: '📊 Overview — How the app works', content: `<p>This app manages every part of the koi auction — from setting up fish before the event, to recording sales during the auction, to checking out bidders at the end.</p><br><p><strong>General flow:</strong></p><ol style="margin-left:20px;margin-top:8px;line-height:2;"><li><strong>Before:</strong> Add donors, create tanks, add fish, register bidders.</li><li><strong>During:</strong> Use the Scribe tab to record each fish sale.</li><li><strong>After:</strong> Use Misc for additional purchases. Use Checkout to total bills and record payments.</li></ol><br><p>Works on any device. Multiple volunteers can use it simultaneously. Data updates every 30 seconds.</p>` },
-    { title: '👥 Donors tab — Adding fish donors', content: `<p>Add donors before adding any fish.</p><br><ol style="margin-left:20px;line-height:2;"><li>Click <strong>+ Add donor</strong>.</li><li>Fill in name, phone, email.</li><li>Select <strong>Type</strong> — determines payout percentage.</li><li>Enter number of fish they brought.</li><li>Click <strong>Save donor</strong>.</li></ol><br><p><strong>Edit:</strong> Orange Edit button. <strong>Delete:</strong> Red Delete button — blocked if fish are linked.</p>` },
-    { title: '🐠 Fish tab — Setting up tanks and fish', content: `<p>Create tanks first, then add fish to each tank.</p><br><p><strong>Create a tank:</strong> Click <strong>+ New tank</strong>, enter a letter and optional description.</p><br><p><strong>Add fish:</strong> Click <strong>+ Add fish</strong> on a tank card. Fish number auto-fills to the next available. Select donor — type auto-fills. Click <strong>Save fish</strong>.</p><br><p>Fish ID = tank letter + fish number (e.g. A1). The fish page shows both sale status (sold/available) and payment status (paid/unpaid).</p>` },
-    { title: '🪪 Bidders tab — Registering auction participants', content: `<p>Every bidder needs a unique number. Bidder number auto-fills to the next available when registering.</p><br><ol style="margin-left:20px;line-height:2;"><li>Click <strong>+ Register bidder</strong>.</li><li>Confirm or change the bidder number.</li><li>Fill in name, phone, email, membership status.</li><li>Click <strong>Save</strong>.</li></ol><br><p>Status badges: <strong>Unpaid</strong> (red), <strong>Partially paid</strong> (yellow), <strong>Paid</strong> (green with amount).</p>` },
-    { title: '✍️ Scribe tab — Recording sales during the auction', content: `<p>Used during the live auction to record each fish sale.</p><br><ol style="margin-left:20px;line-height:2;"><li>Select the <strong>tank</strong> from the dropdown.</li><li>Select the <strong>fish</strong> — only unsold fish appear.</li><li>Enter the <strong>bidder number</strong> — their name appears automatically for verification.</li><li>Enter the <strong>sale price</strong>.</li><li>Press <strong>Enter</strong> or click <strong>✓ Record sale</strong>.</li></ol><br><p>The sales log can be sorted by recency, tank, bidder, or donor. Each row has Edit and Delete buttons.</p>` },
-    { title: '🛒 Misc tab — Additional purchases', content: `<p>Record non-auction purchases. Enter bidder number — name appears for verification.</p><br><ol style="margin-left:20px;line-height:2;"><li>Enter bidder number.</li><li>Select item from dropdown.</li><li>For <strong>quantity-based</strong> items: enter how many. For <strong>fixed amount</strong> items: enter the dollar amount directly.</li><li>Click <strong>+ Add purchase</strong>.</li></ol>` },
-    { title: '🧾 Checkout tab — Taking payment from bidders', content: `<p>Enter a bidder number — their name appears for verification. Click <strong>Look up</strong>.</p><br><p>The app shows all fish won, misc purchases, and grand total. Non-members will be offered a membership once per session.</p><br><p><strong>Partial payments:</strong> Change the amount field to the partial amount. Look them up again later to pay the rest.</p><br><p>Click <strong>↻ Refresh</strong> before taking payment to catch any last-minute additions. Click <strong>🖨️ Print receipt</strong> to print or save as PDF.</p>` },
-    { title: '⚙️ Admin tab — Managing the auction', content: `<p>Password protected. Default password is <strong>admin1234</strong>.</p><br><p><strong>Years:</strong> Switch between years or create new ones. Delete button appears on inactive years — requires typing the year number to confirm.</p><br><p><strong>Donor types:</strong> Add, edit, or delete payout percentage types. Changes update all linked fish.</p><br><p><strong>Misc items:</strong> Manage the price list. Each item can be quantity-based or fixed amount.</p><br><p><strong>Exports:</strong> Download formatted Excel files for all data including donor payouts.</p>` },
-    { title: '❓ Troubleshooting — Common issues', content: `<p><strong>Fish not found in Scribe:</strong> Make sure it was added in the Fish tab and hasn't already been sold.</p><br><p><strong>Bidder not found:</strong> Register them in the Bidders tab first.</p><br><p><strong>Fish already sold:</strong> Check the scribe log. Delete the wrong sale and re-enter.</p><br><p><strong>Can't delete a donor:</strong> Reassign or delete their fish first.</p><br><p><strong>Can't delete a bidder:</strong> Delete their sales and misc purchases first.</p><br><p><strong>Wrong totals in Checkout:</strong> Click ↻ Refresh.</p><br><p><strong>Wrong year showing:</strong> Go to Admin and switch to the correct year.</p>` }
+    { icon: manualIcons.overview,  title: 'Overview — How the app works', content: `<p>This app manages every part of the koi auction — from setting up fish before the event, to recording sales during the auction, to checking out bidders at the end.</p><br><p><strong>General flow:</strong></p><ol style="margin-left:20px;margin-top:8px;line-height:2;"><li><strong>Before:</strong> Add donors, create tanks, add fish, register bidders.</li><li><strong>During:</strong> Use the Scribe tab to record each fish sale.</li><li><strong>After:</strong> Use Misc for additional purchases. Use Checkout to total bills and record payments.</li></ol><br><p>Works on any device. Multiple volunteers can use it simultaneously. Data updates every 30 seconds.</p>` },
+    { icon: manualIcons.donors,    title: 'Donors tab — Adding fish donors', content: `<p>Add donors before adding any fish.</p><br><ol style="margin-left:20px;line-height:2;"><li>Click <strong>+ Add donor</strong>.</li><li>Fill in name, phone, email.</li><li>Select <strong>Type</strong> — determines payout percentage.</li><li>Enter number of fish they brought.</li><li>Click <strong>Save donor</strong>.</li></ol><br><p><strong>Edit:</strong> Orange Edit button. <strong>Delete:</strong> Red Delete button — blocked if fish are linked.</p>` },
+    { icon: manualIcons.fish,      title: 'Fish tab — Setting up tanks and fish', content: `<p>Create tanks first, then add fish to each tank.</p><br><p><strong>Create a tank:</strong> Click <strong>+ New tank</strong>, enter a letter and optional description.</p><br><p><strong>Add fish:</strong> Click <strong>+ Add fish</strong> on a tank card. Fish number auto-fills to the next available. Select donor — type auto-fills. Click <strong>Save fish</strong>.</p><br><p>Fish ID = tank letter + fish number (e.g. A1). The fish page shows both sale status (sold/available) and payment status (paid/unpaid).</p>` },
+    { icon: manualIcons.bidders,   title: 'Bidders tab — Registering auction participants', content: `<p>Every bidder needs a unique number. Bidder number auto-fills to the next available when registering.</p><br><ol style="margin-left:20px;line-height:2;"><li>Click <strong>+ Register bidder</strong>.</li><li>Confirm or change the bidder number.</li><li>Fill in name, phone, email, membership status.</li><li>Click <strong>Save</strong>.</li></ol><br><p>Status badges: <strong>Unpaid</strong> (red), <strong>Partially paid</strong> (yellow), <strong>Paid</strong> (green with amount).</p>` },
+    { icon: manualIcons.scribe,    title: 'Scribe tab — Recording sales during the auction', content: `<p>Used during the live auction to record each fish sale.</p><br><ol style="margin-left:20px;line-height:2;"><li>Select the <strong>tank</strong> from the dropdown.</li><li>Select the <strong>fish</strong> — only unsold fish appear.</li><li>Enter the <strong>bidder number</strong> — their name appears automatically for verification.</li><li>Enter the <strong>sale price</strong>.</li><li>Press <strong>Enter</strong> or click <strong>✓ Record sale</strong>.</li></ol><br><p>The sales log can be sorted by recency, tank, bidder, or donor. Each row has Edit and Delete buttons.</p>` },
+    { icon: manualIcons.misc,      title: 'Misc tab — Additional purchases', content: `<p>Record non-auction purchases. Enter bidder number — name appears for verification.</p><br><ol style="margin-left:20px;line-height:2;"><li>Enter bidder number.</li><li>Select item from dropdown.</li><li>For <strong>quantity-based</strong> items: enter how many. For <strong>fixed amount</strong> items: enter the dollar amount directly.</li><li>Click <strong>+ Add purchase</strong>.</li></ol>` },
+    { icon: manualIcons.checkout,  title: 'Checkout tab — Taking payment from bidders', content: `<p>Enter a bidder number — their name appears for verification. Click <strong>Look up</strong>.</p><br><p>The app shows all fish won, misc purchases, and grand total. Non-members will be offered a membership once per session.</p><br><p><strong>Partial payments:</strong> Change the amount field to the partial amount. Look them up again later to pay the rest.</p><br><p>Click <strong>↻ Refresh</strong> before taking payment to catch any last-minute additions. Click <strong>🖨️ Print receipt</strong> to print or save as PDF.</p>` },
+    { icon: manualIcons.admin,     title: 'Admin tab — Managing the auction', content: `<p>Password protected. Default password is <strong>admin1234</strong>.</p><br><p><strong>Years:</strong> Switch between years or create new ones. Delete button appears on inactive years — requires typing the year number to confirm.</p><br><p><strong>Donor types:</strong> Add, edit, or delete payout percentage types. Changes update all linked fish.</p><br><p><strong>Misc items:</strong> Manage the price list. Each item can be quantity-based or fixed amount.</p><br><p><strong>Exports:</strong> Download formatted Excel files for all data including donor payouts.</p>` },
+    { icon: manualIcons.help,      title: 'Troubleshooting — Common issues', content: `<p><strong>Fish not found in Scribe:</strong> Make sure it was added in the Fish tab and hasn't already been sold.</p><br><p><strong>Bidder not found:</strong> Register them in the Bidders tab first.</p><br><p><strong>Fish already sold:</strong> Check the scribe log. Delete the wrong sale and re-enter.</p><br><p><strong>Can't delete a donor:</strong> Reassign or delete their fish first.</p><br><p><strong>Can't delete a bidder:</strong> Delete their sales and misc purchases first.</p><br><p><strong>Wrong totals in Checkout:</strong> Click ↻ Refresh.</p><br><p><strong>Wrong year showing:</strong> Go to Admin and switch to the correct year.</p>` }
   ];
 
   const accordion = document.getElementById('manual-accordion');
   accordion.innerHTML = sections.map((s, i) => `
     <div class="card" style="margin-bottom:8px;">
-      <div class="card-header" style="cursor:pointer;" onclick="toggleManualSection(${i})">
-        <div class="card-header-title" style="font-size:14px;">${s.title}</div>
-        <span id="manual-arrow-${i}" style="font-size:18px;color:#4db8d4;transition:transform 0.2s;">▼</span>
+      <div class="card-header manual-card-header" style="cursor:pointer;" onclick="toggleManualSection(${i})">
+        <div class="manual-title-row">
+          ${s.icon}
+          <div class="card-header-title">${s.title}</div>
+        </div>
+        <span id="manual-arrow-${i}" class="manual-arrow">▼</span>
       </div>
       <div id="manual-section-${i}" style="display:none;">
-        <div class="card-body" style="font-size:13px;line-height:1.7;color:#222;">${s.content}</div>
+        <div class="card-body" style="font-size:13px;line-height:1.8;color:#2a2218;">${s.content}</div>
       </div>
     </div>
   `).join('');

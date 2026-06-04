@@ -1,0 +1,43 @@
+:root {
+  --koi-navy: #11182c;
+  --koi-navy-2: #0b1020;
+  --koi-red: #c93a2f;
+  --koi-red-dark: #8f221d;
+  --koi-cream: #f7f1e6;
+  --koi-paper: #fffaf0;
+  --koi-ink: #151515;
+  --koi-muted: #746b61;
+  --koi-gold: #c9a969;
+  --koi-green: #3e9f55;
+  --koi-shadow: 0 10px 30px rgba(17, 24, 44, 0.12);
+  --koi-radius: 14px;
+  --koi-border: 1px solid rgba(17, 24, 44, 0.12);
+}
+
+.koi-paper {
+  background-color: var(--koi-paper);
+  background-image: url('./decor/seigaiha-pattern.svg');
+}
+
+.koi-card {
+  background: rgba(255, 250, 240, 0.94);
+  border: var(--koi-border);
+  border-radius: var(--koi-radius);
+  box-shadow: var(--koi-shadow);
+}
+
+.koi-hero {
+  background-image: linear-gradient(90deg, rgba(247,241,230,.08), rgba(247,241,230,.2)), url('./hero-banner-koi-cherry-1600.webp');
+  background-size: cover;
+  background-position: center;
+  min-height: 220px;
+}
+
+.koi-section-title::after {
+  content: "";
+  display: block;
+  width: 110px;
+  height: 10px;
+  margin-top: 4px;
+  background: url('./decor/ink-brush-divider.svg') center / contain no-repeat;
+}
