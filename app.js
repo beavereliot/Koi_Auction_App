@@ -24,7 +24,7 @@ async function loadSettings() {
     appSettings.auctionTitle = active.title;
     appSettings.adminPassword = active.admin_password || 'admin1234';
     appSettings.activeYearId = active.id;
-    document.getElementById('auction-subtitle').textContent = active.title;
+    setAuctionSubtitle(active.title);
   } else {
     const { data: newSettings } = await sb.from('settings').insert({
       year: appSettings.auctionYear,
@@ -34,7 +34,7 @@ async function loadSettings() {
     }).select().single();
     if (newSettings) {
       appSettings.activeYearId = newSettings.id;
-      document.getElementById('auction-subtitle').textContent = appSettings.auctionTitle;
+      setAuctionSubtitle(appSettings.auctionTitle);
     }
   }
 }
@@ -125,6 +125,11 @@ function attachBidderLookup(inputId, displayId) {
 // DASHBOARD
 // ============================================
 let dashTotalsTab = 'donor_payouts';
+let dashTabData = {};
+
+function setAuctionSubtitle(title) {
+  document.querySelectorAll('.auction-subtitle').forEach(el => { el.textContent = title; });
+}
 
 async function renderDashboard() {
   setContent('<p style="color:#4db8d4;padding:1rem;">Loading dashboard...</p>');
@@ -182,11 +187,13 @@ async function renderDashboard() {
     miscBreakdown[p.item_name].total += Number(p.total_price);
   });
 
+  dashTabData = { donor_payouts: donorPayoutsHtml, misc_items: miscItemsHtml, payments: paymentsHtml };
+
   const totalsTabsHtml = `
     <div class="totals-tabs">
-      <div class="totals-tab ${dashTotalsTab === 'donor_payouts' ? 'active' : ''}" onclick="switchDashTab('donor_payouts')">Donor payouts</div>
-      <div class="totals-tab ${dashTotalsTab === 'misc_items' ? 'active' : ''}" onclick="switchDashTab('misc_items')">Misc items sold</div>
-      <div class="totals-tab ${dashTotalsTab === 'payments' ? 'active' : ''}" onclick="switchDashTab('payments')">Payment methods</div>
+      <div class="totals-tab ${dashTotalsTab === 'donor_payouts' ? 'active' : ''}" data-tab="donor_payouts" onclick="switchDashTab('donor_payouts')">Donor payouts</div>
+      <div class="totals-tab ${dashTotalsTab === 'misc_items' ? 'active' : ''}" data-tab="misc_items" onclick="switchDashTab('misc_items')">Misc items sold</div>
+      <div class="totals-tab ${dashTotalsTab === 'payments' ? 'active' : ''}" data-tab="payments" onclick="switchDashTab('payments')">Payment methods</div>
     </div>
   `;
 
@@ -315,7 +322,11 @@ async function renderDashboard() {
 
 function switchDashTab(tab) {
   dashTotalsTab = tab;
-  renderDashboard();
+  document.querySelectorAll('.totals-tab').forEach(el => {
+    el.classList.toggle('active', el.dataset.tab === tab);
+  });
+  const content = document.getElementById('dash-tab-content');
+  if (content) content.innerHTML = dashTabData[tab] || '';
 }
 
 // ============================================
@@ -1920,7 +1931,7 @@ async function switchYear(yearId) {
   appSettings.auctionYear = data.year;
   appSettings.auctionTitle = data.title;
   appSettings.adminPassword = data.admin_password || 'admin1234';
-  document.getElementById('auction-subtitle').textContent = data.title;
+  setAuctionSubtitle(data.title);
   await loadBidderCache();
   const activePage = getActivePage();
   loadPage(activePage);
@@ -1946,7 +1957,7 @@ async function createNewYear() {
   appSettings.activeYearId = data.id;
   appSettings.auctionYear = data.year;
   appSettings.auctionTitle = data.title;
-  document.getElementById('auction-subtitle').textContent = data.title;
+  setAuctionSubtitle(data.title);
   await loadBidderCache();
   alert(`${year} auction year created! Misc items and donor types copied from previous year.`);
   renderAdminPanel();
@@ -2245,7 +2256,7 @@ async function silentRefresh() {
     appSettings.auctionYear     = activeYear.year;
     appSettings.auctionTitle    = activeYear.title;
     appSettings.adminPassword   = activeYear.admin_password || 'admin1234';
-    document.getElementById('auction-subtitle').textContent = activeYear.title;
+    setAuctionSubtitle(activeYear.title);
     await loadBidderCache();
   }
 

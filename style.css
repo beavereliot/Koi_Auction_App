@@ -550,6 +550,11 @@ body {
 .receipt-total  { text-align: right; font-size: 15px; font-weight: bold; margin-top: 10px; }
 .receipt-footer { text-align: center; font-size: 11px; color: #999; margin-top: 20px; }
 
+/* ─── Mobile brand strip (hidden on desktop) ─── */
+.mobile-brand {
+  display: none;
+}
+
 /* ─── Mobile (≤ 768px) ───────────────────────── */
 /*
   main-wrap uses display:contents so its children (hero-banner, content)
@@ -563,7 +568,35 @@ body {
   .main-wrap { display: contents; }
 
   /* 1 — Hero banner at the very top */
-  .hero-banner { order: 1; height: 170px; }
+  .hero-banner { order: 1; height: 190px; }
+
+  /* Mobile brand overlay — sits at the bottom of the hero banner */
+  .mobile-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    padding: 10px 14px 11px;
+    background: linear-gradient(transparent, rgba(5,5,8,0.82));
+  }
+  .mobile-brand-logo {
+    width: 36px; height: 36px; border-radius: 50%;
+    border: 1.5px solid var(--gold);
+    object-fit: cover; flex-shrink: 0;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+  }
+  .mobile-brand-title {
+    font-family: 'Playfair Display', serif;
+    color: rgba(255,255,255,0.93);
+    font-size: 12px; font-weight: 700; line-height: 1.35;
+  }
+  .mobile-brand-sub {
+    color: var(--red);
+    font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    margin-top: 2px;
+  }
 
   /* 2 — Sidebar becomes horizontal nav strip */
   .sidebar {
