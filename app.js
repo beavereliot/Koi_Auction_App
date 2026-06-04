@@ -470,16 +470,20 @@ let allDonorsForFish = [];
 
 async function renderFish() {
   setContent('<p style="color:#4db8d4;padding:1rem;">Loading fish...</p>');
-  const [{ data: tanks }, { data: fish }, { data: donors }] = await Promise.all([
+  const [{ data: tanks }, { data: fish }, { data: donors }, { data: yearSales }] = await Promise.all([
     sb.from('tanks').select('*').eq('year_id', appSettings.activeYearId).order('letter'),
-    sb.from('fish').select('*, tanks(letter), donors(id, first_name, last_name, type), sales(sale_price, bidder_id)').eq('year_id', appSettings.activeYearId).order('fish_number'),
+    sb.from('fish').select('*, tanks(letter), donors(id, first_name, last_name, type)').eq('year_id', appSettings.activeYearId).order('fish_number'),
     sb.from('donors').select('id, first_name, last_name, type').eq('year_id', appSettings.activeYearId).order('last_name'),
+    sb.from('sales').select('fish_id, sale_price, bidder_id').eq('year_id', appSettings.activeYearId),
   ]);
 
-  const allBidders = fish ? [...new Set((fish || []).flatMap(f => f.sales || []).map(s => s.bidder_id))].filter(Boolean) : [];
+  const salesMap = {};
+  (yearSales || []).forEach(s => { salesMap[s.fish_id] = s; });
+
+  const allBidderIds = [...new Set((yearSales || []).map(s => s.bidder_id))].filter(Boolean);
   let paidBidderIds = new Set();
-  if (allBidders.length > 0) {
-    const { data: bidderData } = await sb.from('bidders').select('id, is_paid').in('id', allBidders);
+  if (allBidderIds.length > 0) {
+    const { data: bidderData } = await sb.from('bidders').select('id, is_paid').in('id', allBidderIds);
     (bidderData || []).filter(b => b.is_paid).forEach(b => paidBidderIds.add(b.id));
   }
 
@@ -533,8 +537,9 @@ async function renderFish() {
                     <thead><tr><th>ID</th><th>Description</th><th>Donor</th><th>Type</th><th>Sale status</th><th>Payment</th><th>Actions</th></tr></thead>
                     <tbody>
                       ${tf.map(f => {
-                        const sold = f.sales && f.sales.length > 0;
-                        const bidderPaid = sold && paidBidderIds.has(f.sales[0].bidder_id);
+                        const fishSale = salesMap[f.id];
+                        const sold = !!fishSale;
+                        const bidderPaid = sold && paidBidderIds.has(fishSale.bidder_id);
                         const paymentBadge = !sold ? '—' : bidderPaid
                           ? '<span class="badge badge-sold-paid">Paid</span>'
                           : '<span class="badge badge-sold-unpaid">Unpaid</span>';
@@ -544,7 +549,7 @@ async function renderFish() {
                             <td>${f.description}</td>
                             <td>${f.donors ? f.donors.first_name + ' ' + f.donors.last_name : '—'}</td>
                             <td><span class="badge badge-${(f.type||'').toLowerCase()}">${f.type || '—'}</span></td>
-                            <td>${sold ? `<span class="badge badge-sold">Sold $${f.sales[0].sale_price}</span>` : '<span class="badge badge-unsold">Available</span>'}</td>
+                            <td>${sold ? `<span class="badge badge-sold">Sold $${fishSale.sale_price}</span>` : '<span class="badge badge-unsold">Available</span>'}</td>
                             <td>${paymentBadge}</td>
                             <td>
                               <button class="btn btn-warning btn-xs" onclick="openEditFishModal('${f.id}')">Edit</button>
@@ -1379,9 +1384,15 @@ async function recordPayment(bidderId, grandTotal) {
     if (btn) { btn.disabled = false; btn.textContent = '✓ Record payment'; }
     return;
   }
-  const { data: allPayments } = await sb.from('payments').select('amount').eq('bidder_id', bidderId);
+  const [{ data: allPayments }, { data: bidderSales }, { data: bidderMisc }] = await Promise.all([
+    sb.from('payments').select('amount').eq('bidder_id', bidderId),
+    sb.from('sales').select('sale_price').eq('bidder_id', bidderId),
+    sb.from('misc_purchases').select('total_price').eq('bidder_id', bidderId),
+  ]);
   const totalPaid = (allPayments || []).reduce((s, r) => s + Number(r.amount), 0);
-  const isPaid = totalPaid >= grandTotal - 0.01;
+  const actualTotal = (bidderSales || []).reduce((s, r) => s + Number(r.sale_price), 0)
+                    + (bidderMisc || []).reduce((s, r) => s + Number(r.total_price), 0);
+  const isPaid = actualTotal > 0 && totalPaid >= actualTotal - 0.01;
   await sb.from('bidders').update({ is_paid: isPaid, payment_method, payment_reference, total_paid: totalPaid }).eq('id', bidderId);
   msg.innerHTML = '<div class="alert alert-success">Payment recorded!</div>';
   setTimeout(() => loadCheckout(), 1000);
