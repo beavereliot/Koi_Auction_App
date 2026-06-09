@@ -716,7 +716,9 @@ async function renderFish() {
                             <td>${paymentBadge}</td>
                             <td>
                               ${lockIf(`<button class="btn btn-warning btn-xs" onclick="openEditFishModal('${f.id}')">Edit</button>
-                              <button class="btn btn-danger btn-xs" onclick="deleteFish('${f.id}')">Delete</button>`)}
+                              ${paidFishIds.has(f.id)
+                                ? '<span style="font-size:11px;color:#0a6640;font-weight:600;">🔒 Paid</span>'
+                                : `<button class="btn btn-danger btn-xs" onclick="deleteFish('${f.id}')">Delete</button>`}`)}
                             </td>
                           </tr>`;
                       }).join('')}
@@ -888,9 +890,26 @@ async function saveFish() {
 }
 
 async function deleteFish(id) {
-  const { data: existingSale } = await sb.from('sales').select('id, sale_price, bidder_id').eq('fish_id', id);
+  const { data: existingSale } = await sb.from('sales').select('id, sale_price, bidder_id, created_at').eq('fish_id', id);
   if (existingSale && existingSale.length > 0) {
     const sale = existingSale[0];
+    // Block deletion if this fish has been paid for (FIFO check)
+    const [{ data: fishPayments }, { data: fishBidderSales }] = await Promise.all([
+      sb.from('payments').select('amount').eq('bidder_id', sale.bidder_id),
+      sb.from('sales').select('fish_id, sale_price, created_at').eq('bidder_id', sale.bidder_id).order('created_at'),
+    ]);
+    const totalPaid = (fishPayments||[]).reduce((s,r) => s+Number(r.amount), 0);
+    let covered = totalPaid;
+    for (const s of (fishBidderSales||[])) {
+      const price = Number(s.sale_price);
+      if (covered >= price - 0.01) {
+        if (s.fish_id === id) {
+          alert('This fish cannot be deleted — it has already been paid for. Issue a refund in Checkout first if a correction is needed.');
+          return;
+        }
+        covered -= price;
+      } else break;
+    }
     const { data: bidder } = await sb.from('bidders').select('first_name, last_name, bidder_number').eq('id', sale.bidder_id).single();
     const bidderInfo = bidder ? `Bidder #${bidder.bidder_number} (${bidder.first_name} ${bidder.last_name})` : 'the buyer';
     if (!window.confirm(`Warning: This fish was sold for $${sale.sale_price} to ${bidderInfo}. Deleting it removes the sale record but NOT any payments already recorded — ${bidderInfo} may appear as having overpaid. Continue?`)) return;
