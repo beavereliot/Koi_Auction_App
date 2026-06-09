@@ -66,14 +66,41 @@ new MutationObserver(mutations => {
 }).observe(document.body, { subtree: true, attributes: true, attributeFilter: ['class'] });
 
 window.addEventListener('popstate', e => {
-  const openModalEl = document.querySelector('.modal-overlay.open');
-  if (openModalEl) {
-    openModalEl.classList.remove('open');
-    return;
+  const wizardModal = document.getElementById('sale-wizard-modal');
+  const wizardOpen = wizardModal?.classList.contains('open');
+
+  // Wizard step 3 → back → show step 2 (fish list)
+  if (e.state?.wizardStep === 3 && wizardOpen) { _swBackToFish(); return; }
+  // Wizard step 2 → back → show step 1 (tank list)
+  if (e.state?.wizardStep === 2 && wizardOpen) { openSaleWizard(); return; }
+  // Wizard step 1 state (modal just opened) → back → close wizard
+  if (e.state?.modal === 'sale-wizard-modal' && wizardOpen) {
+    wizardModal.classList.remove('open'); return;
   }
+
+  const openModalEl = document.querySelector('.modal-overlay.open');
+  if (openModalEl) { openModalEl.classList.remove('open'); return; }
+
   const page = e.state?.page || 'dashboard';
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.page === page));
   loadPage(page);
+});
+
+// Enter key: field-to-field navigation via data-enter-focus, or submit the open modal's primary button
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  const tag = document.activeElement?.tagName?.toLowerCase();
+  if (tag === 'textarea' || tag === 'button' || tag === 'select') return;
+  const focusNext = document.activeElement?.dataset?.enterFocus;
+  if (focusNext) {
+    e.preventDefault();
+    document.getElementById(focusNext)?.focus();
+    return;
+  }
+  const openModal = document.querySelector('.modal-overlay.open');
+  if (!openModal) return;
+  const primaryBtn = openModal.querySelector('.btn-primary:not([disabled])');
+  if (primaryBtn) { e.preventDefault(); primaryBtn.click(); }
 });
 
 function loadPage(page) {
@@ -180,16 +207,22 @@ async function renderDashboard() {
   ] = await Promise.all([
     sb.from('bidders').select('id', { count: 'exact' }).eq('year_id', appSettings.activeYearId),
     sb.from('sales').select('sale_price, fish_id').eq('year_id', appSettings.activeYearId),
-    sb.from('misc_purchases').select('total_price, item_name, bidder_id, quantity').eq('year_id', appSettings.activeYearId),
+    sb.from('misc_purchases').select('total_price, item_name, bidder_id, quantity, club_cost_total').eq('year_id', appSettings.activeYearId),
     sb.from('fish').select('id, donor_id, donor_percent').eq('year_id', appSettings.activeYearId),
     sb.from('donors').select('id, first_name, last_name, type').eq('year_id', appSettings.activeYearId),
     sb.from('payments').select('amount, payment_method').eq('year_id', appSettings.activeYearId),
-    sb.from('misc_items').select('name').eq('year_id', appSettings.activeYearId),
+    sb.from('misc_items').select('name, is_quantity_based, club_cost').eq('year_id', appSettings.activeYearId),
   ]);
   const fishCount = (fish || []).length;
 
+  // Build current item cost map — always use live item definitions so dashboard updates immediately
+  const itemCostMap = {};
+  (miscItems || []).forEach(i => { itemCostMap[i.name] = i.is_quantity_based ? Number(i.club_cost || 0) : 0; });
+
   const auctionTotal = (sales || []).reduce((s, r) => s + Number(r.sale_price), 0);
   const miscTotal = (misc || []).reduce((s, r) => s + Number(r.total_price), 0);
+  const miscClubCost = (misc || []).reduce((s, r) => s + Number(r.quantity || 1) * (itemCostMap[r.item_name] || 0), 0);
+  const miscNet = miscTotal - miscClubCost;
 
   let donorAuctionPayout = 0;
   let clubAuctionPortion = 0;
@@ -215,9 +248,10 @@ async function renderDashboard() {
   // Misc item breakdown
   const miscBreakdown = {};
   (misc || []).forEach(p => {
-    if (!miscBreakdown[p.item_name]) miscBreakdown[p.item_name] = { qty: 0, total: 0 };
+    if (!miscBreakdown[p.item_name]) miscBreakdown[p.item_name] = { qty: 0, total: 0, cost: 0 };
     miscBreakdown[p.item_name].qty += Number(p.quantity || 1);
     miscBreakdown[p.item_name].total += Number(p.total_price);
+    miscBreakdown[p.item_name].cost += Number(p.quantity || 1) * (itemCostMap[p.item_name] || 0);
   });
 
   const totalsTabsHtml = `
@@ -249,18 +283,20 @@ async function renderDashboard() {
 
   const miscItemsHtml = `
     <table class="table">
-      <thead><tr><th>Item</th><th style="text-align:right;">Qty sold</th><th style="text-align:right;">Total $</th></tr></thead>
+      <thead><tr><th>Item</th><th style="text-align:right;">Qty</th><th style="text-align:right;">Revenue</th><th style="text-align:right;">Club cost</th></tr></thead>
       <tbody>
         ${Object.keys(miscBreakdown).length > 0 ? Object.entries(miscBreakdown).sort((a,b) => b[1].total - a[1].total).map(([name, data]) => `
           <tr>
             <td>${name}</td>
             <td style="text-align:right;">${data.qty}</td>
             <td style="text-align:right;font-weight:bold;">$${data.total.toFixed(2)}</td>
+            <td style="text-align:right;color:${data.cost > 0 ? '#c0392b' : '#888'};">${data.cost > 0 ? '-$' + data.cost.toFixed(2) : '—'}</td>
           </tr>
-        `).join('') : '<tr><td colspan="3" style="text-align:center;color:#888;">No misc purchases yet</td></tr>'}
+        `).join('') : '<tr><td colspan="4" style="text-align:center;color:#888;">No misc purchases yet</td></tr>'}
         <tr style="background:#f0f9fc;">
-          <td colspan="2" style="font-weight:bold;">Total misc revenue</td>
+          <td colspan="2" style="font-weight:bold;">Total misc</td>
           <td style="text-align:right;font-weight:bold;color:#1a5f7a;">$${miscTotal.toFixed(2)}</td>
+          <td style="text-align:right;font-weight:bold;color:#c0392b;">${miscClubCost > 0 ? '-$' + miscClubCost.toFixed(2) : '—'}</td>
         </tr>
       </tbody>
     </table>
@@ -312,8 +348,8 @@ async function renderDashboard() {
       <div class="stat-card">
         <img class="stat-icon" src="assets/newicons/misc.png" alt="" />
         <div class="stat-text">
-          <div class="stat-label">Misc sales</div>
-          <div class="stat-value">$${miscTotal.toFixed(0)}</div>
+          <div class="stat-label">Misc ${miscClubCost > 0 ? 'net' : 'sales'}</div>
+          <div class="stat-value">$${miscNet.toFixed(0)}</div>
         </div>
       </div>
       <div class="stat-card">
@@ -336,11 +372,12 @@ async function renderDashboard() {
       <div class="card-header"><div class="card-header-title">Grand total</div></div>
       <div class="card-body">
         <div class="total-row"><span>Auction sales</span><span>$${auctionTotal.toFixed(2)}</span></div>
-        <div class="total-row"><span>Misc sales</span><span>$${miscTotal.toFixed(2)}</span></div>
-        <div class="total-row grand"><span>Total revenue</span><span class="amount">$${(auctionTotal + miscTotal).toFixed(2)}</span></div>
+        <div class="total-row"><span>Misc revenue</span><span>$${miscTotal.toFixed(2)}</span></div>
+        <div class="total-row grand"><span>Total revenue</span><span class="amount" style="color:#1a5f7a;">$${(auctionTotal + miscTotal).toFixed(2)}</span></div>
         <hr class="divider">
         <div class="total-row"><span style="color:#c0392b;">Donor payout (auction)</span><span style="color:#c0392b;">-$${donorAuctionPayout.toFixed(2)}</span></div>
-        <div class="total-row grand"><span>Club net (auction)</span><span class="amount" style="color:#27ae60;">$${clubAuctionPortion.toFixed(2)}</span></div>
+        ${miscClubCost > 0 ? `<div class="total-row"><span style="color:#c0392b;">Misc club cost</span><span style="color:#c0392b;">-$${miscClubCost.toFixed(2)}</span></div>` : ''}
+        <div class="total-row grand"><span>Club net</span><span class="amount" style="color:#27ae60;">$${(clubAuctionPortion + miscNet).toFixed(2)}</span></div>
       </div>
     </div>
 
@@ -1028,25 +1065,27 @@ async function openSaleWizard() {
 }
 
 async function _swPickTank(i) {
+  history.pushState({ wizardStep: 2 }, '');
   _swTank = document.getElementById('sale-wizard-content')._swTanks[i];
   const content = document.getElementById('sale-wizard-content');
   content.innerHTML = '<p style="color:#4db8d4;padding:1rem;">Loading fish...</p>';
   const { data: fish } = await sb.from('fish').select('id, fish_number, description, sales(id)').eq('tank_id', _swTank.id).order('fish_number');
   _swFishList = (fish || []).filter(f => !f.sales || f.sales.length === 0);
   if (_swFishList.length === 0) {
-    content.innerHTML = `<div class="modal-title">Tank ${_swTank.letter} — No fish available</div><p style="color:#888;text-align:center;padding:12px;">All fish in this tank have been sold.</p><div class="modal-actions"><button class="btn btn-outline btn-sm" onclick="openSaleWizard()">← Back</button><button class="btn btn-outline btn-sm" onclick="closeModal('sale-wizard-modal')">Cancel</button></div>`;
+    content.innerHTML = `<div class="modal-title">Tank ${_swTank.letter} — No fish available</div><p style="color:#888;text-align:center;padding:12px;">All fish in this tank have been sold.</p><div class="modal-actions"><button class="btn btn-outline btn-sm" onclick="history.back()">← Back</button><button class="btn btn-outline btn-sm" onclick="closeModal('sale-wizard-modal')">Cancel</button></div>`;
     return;
   }
   content.innerHTML = `
     <div class="modal-title">Tank ${_swTank.letter} — Select fish</div>
     ${_swFishList.map((f, i) => `<button class="wizard-btn" onclick="_swPickFish(${i})"><span class="fish-id" style="flex-shrink:0;">${_swTank.letter}${f.fish_number}</span><span style="margin-left:10px;">${f.description}</span></button>`).join('')}
     <div class="modal-actions" style="margin-top:14px;">
-      <button class="btn btn-outline btn-sm" onclick="openSaleWizard()">← Back</button>
+      <button class="btn btn-outline btn-sm" onclick="history.back()">← Back</button>
       <button class="btn btn-outline btn-sm" onclick="closeModal('sale-wizard-modal')">Cancel</button>
     </div>`;
 }
 
 function _swPickFish(i) {
+  history.pushState({ wizardStep: 3 }, '');
   _swFish = _swFishList[i];
   const content = document.getElementById('sale-wizard-content');
   content.innerHTML = `
@@ -1055,7 +1094,7 @@ function _swPickFish(i) {
     <div class="form-group">
       <label>Bidder #</label>
       <div style="display:flex;align-items:center;gap:10px;">
-        <input id="sw-bidder" type="number" placeholder="Bidder number" style="width:140px;" />
+        <input id="sw-bidder" type="number" placeholder="Bidder number" style="width:140px;" data-enter-focus="sw-price" />
         <span id="sw-bidder-name" class="bidder-name-display"></span>
       </div>
     </div>
@@ -1065,8 +1104,7 @@ function _swPickFish(i) {
     </div>
     <div id="sw-msg"></div>
     <div class="modal-actions">
-      <button class="btn btn-outline btn-sm" onclick="_swPickTank(0)" style="display:none;"></button>
-      <button class="btn btn-outline btn-sm" onclick="_swBackToFish()">← Back</button>
+      <button class="btn btn-outline btn-sm" onclick="history.back()">← Back</button>
       <button class="btn btn-outline btn-sm" onclick="closeModal('sale-wizard-modal')">Cancel</button>
       <button class="btn btn-primary btn-sm" id="sw-submit-btn" onclick="_swSubmit()">✓ Record sale</button>
     </div>`;
@@ -1080,7 +1118,7 @@ function _swBackToFish() {
     <div class="modal-title">Tank ${_swTank.letter} — Select fish</div>
     ${_swFishList.map((f, i) => `<button class="wizard-btn" onclick="_swPickFish(${i})"><span class="fish-id" style="flex-shrink:0;">${_swTank.letter}${f.fish_number}</span><span style="margin-left:10px;">${f.description}</span></button>`).join('')}
     <div class="modal-actions" style="margin-top:14px;">
-      <button class="btn btn-outline btn-sm" onclick="openSaleWizard()">← Back</button>
+      <button class="btn btn-outline btn-sm" onclick="history.back()">← Back</button>
       <button class="btn btn-outline btn-sm" onclick="closeModal('sale-wizard-modal')">Cancel</button>
     </div>`;
 }
@@ -1342,7 +1380,7 @@ async function renderCheckout() {
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;">
           <div class="form-group" style="margin-bottom:0;flex:0 0 auto;">
             <label>Bidder #</label>
-            <input id="co-bidder-num" type="number" placeholder="Enter bidder number" style="width:160px;" />
+            <input id="co-bidder-num" type="number" placeholder="Enter bidder number" style="width:160px;" onkeydown="if(event.key==='Enter') loadCheckout()" />
           </div>
           <div style="margin-top:18px;">
             <span id="co-bidder-name-display" class="bidder-name-display"></span>
@@ -1466,7 +1504,7 @@ async function loadCheckout() {
           </div>
         ` : `
         <div class="form-group"><label>${isPartial ? 'Remaining balance' : 'Total due'}</label>
-          <input type="number" value="${Math.max(0, remaining).toFixed(2)}" id="co-amount" step="0.01" min="0.01" />
+          <input type="number" value="${Math.max(0, remaining).toFixed(2)}" id="co-amount" step="0.01" min="0.01" onkeydown="if(event.key==='Enter') document.getElementById('record-payment-btn')?.click()" />
         </div>
         <div class="form-group"><label>Payment method</label>
           <select id="co-payment">
@@ -1631,13 +1669,13 @@ async function renderMisc() {
           </div>
         </div>
         <div class="form-group"><label>Item</label>
-          <select id="m-item" onchange="updateMiscQtyLabel()">
-            ${(items || []).map(i => `<option value="${i.id}" data-price="${i.unit_price}" data-qty-based="${i.is_quantity_based}">${i.name} — $${i.unit_price}</option>`).join('')}
+          <select id="m-item">
+            ${(items || []).map(i => `<option value="${i.id}" data-price="${i.unit_price}" data-club-cost="${i.club_cost || 0}">${i.name} — $${i.unit_price}${i.is_quantity_based ? ' (club cost $' + Number(i.club_cost || 0).toFixed(2) + '/unit)' : ''}</option>`).join('')}
           </select>
         </div>
         <div class="form-group">
-          <label id="m-qty-label">${isQtyBased ? 'Quantity' : 'Amount ($)'}</label>
-          <input id="m-qty" type="number" value="1" min="${isQtyBased ? '1' : '0.01'}" step="${isQtyBased ? '1' : '0.01'}" />
+          <label>Quantity</label>
+          <input id="m-qty" type="number" value="1" min="1" step="1" />
         </div>
         <button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="saveMiscPurchase()">+ Add purchase</button>
         <div id="misc-msg"></div>
@@ -1683,20 +1721,7 @@ async function renderMisc() {
   attachBidderLookup('m-bidder', 'm-bidder-name');
 }
 
-function updateMiscQtyLabel() {
-  const select = document.getElementById('m-item');
-  if (!select) return;
-  const opt = select.options[select.selectedIndex];
-  const isQtyBased = opt.dataset.qtyBased === 'true';
-  const label = document.getElementById('m-qty-label');
-  const input = document.getElementById('m-qty');
-  if (label) label.textContent = isQtyBased ? 'Quantity' : 'Amount ($)';
-  if (input) {
-    input.min = isQtyBased ? '1' : '0.01';
-    input.step = isQtyBased ? '1' : '0.01';
-    input.value = isQtyBased ? '1' : '';
-  }
-}
+function updateMiscQtyLabel() { /* simplified — all items now use whole-number quantity */ }
 
 function openEditMiscModal(id) {
   const p = miscPurchaseDataCache[id];
@@ -1739,26 +1764,19 @@ async function saveMiscPurchase() {
   }
   const selectedOption = select.options[select.selectedIndex];
   const item_name = selectedOption.text.split(' — ')[0];
-  const isQtyBased = selectedOption.dataset.qtyBased === 'true';
-  const qtyVal = parseFloat(document.getElementById('m-qty').value);
+  const quantity = parseInt(document.getElementById('m-qty').value);
 
   if (!bidderNum) { msg.innerHTML = '<div class="alert alert-error">Please enter a bidder number.</div>'; return; }
-  if (!qtyVal || qtyVal <= 0) { msg.innerHTML = '<div class="alert alert-error">Please enter a valid quantity or amount.</div>'; return; }
+  if (!quantity || quantity < 1) { msg.innerHTML = '<div class="alert alert-error">Please enter a valid quantity.</div>'; return; }
 
-  let unit_price, quantity, total_price;
-  if (isQtyBased) {
-    unit_price = parseFloat(selectedOption.dataset.price);
-    quantity = qtyVal;
-    total_price = unit_price * quantity;
-  } else {
-    unit_price = 1;
-    quantity = qtyVal;
-    total_price = qtyVal;
-  }
+  const unit_price = parseFloat(selectedOption.dataset.price);
+  const total_price = unit_price * quantity;
+  const club_cost_per_unit = parseFloat(selectedOption.dataset.clubCost || '0') || 0;
+  const club_cost_total = club_cost_per_unit * quantity;
 
   const { data: bidder } = await sb.from('bidders').select('id').eq('bidder_number', bidderNum).eq('year_id', appSettings.activeYearId).single();
   if (!bidder) { msg.innerHTML = '<div class="alert alert-error">Bidder not found.</div>'; return; }
-  const { error } = await sb.from('misc_purchases').insert({ bidder_id: bidder.id, item_name, quantity, unit_price, total_price, year_id: appSettings.activeYearId });
+  const { error } = await sb.from('misc_purchases').insert({ bidder_id: bidder.id, item_name, quantity, unit_price, total_price, club_cost_total, year_id: appSettings.activeYearId });
   if (error) { msg.innerHTML = '<div class="alert alert-error">Error: ' + error.message + '</div>'; return; }
   msg.innerHTML = '<div class="alert alert-success">Purchase added!</div>';
   setTimeout(() => renderMisc(), 1000);
@@ -1815,13 +1833,14 @@ async function renderAdminPanel() {
 
   const miscItemsHtml = miscItems && miscItems.length > 0
     ? `<table class="table">
-        <thead><tr><th>Item name</th><th>Unit price</th><th>Type</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Item name</th><th>Sale price</th><th>Type</th><th>Club cost</th><th>Actions</th></tr></thead>
         <tbody>
           ${miscItems.map(i => `
             <tr>
               <td>${i.name}</td>
               <td>$${Number(i.unit_price).toFixed(2)}</td>
-              <td>${i.is_quantity_based ? 'Qty based' : 'Fixed amount'}</td>
+              <td>${i.is_quantity_based ? '<span class="badge badge-partial">Cost based</span>' : '<span class="badge badge-paid">No cost</span>'}</td>
+              <td>${i.is_quantity_based ? '$' + Number(i.club_cost || 0).toFixed(2) + '/unit' : '—'}</td>
               <td>
                 <button class="btn btn-warning btn-xs" onclick="openEditMiscItemModal('${i.id}')">Edit</button>
                 <button class="btn btn-danger btn-xs" onclick="deleteMiscItem('${i.id}')">Delete</button>
@@ -1857,27 +1876,6 @@ async function renderAdminPanel() {
     </div>
 
     <div class="card">
-      <div class="card-header"><div class="card-header-title">Data lock</div></div>
-      <div class="card-body">
-        <p style="font-size:13px;color:#666;margin-bottom:14px;">Lock the active year to prevent volunteers from adding, editing, or deleting any data. You can still make changes as admin. Toggle at any time.</p>
-        <button class="btn btn-sm ${appSettings.isLocked ? 'btn-success' : 'btn-danger'}" style="font-size:13px;padding:8px 20px;" onclick="toggleYearLock()">
-          ${appSettings.isLocked ? '🔓 Unlock year — allow changes' : '🔒 Lock year — read-only for volunteers'}
-        </button>
-        ${appSettings.isLocked ? '<p style="font-size:12px;color:#1a6640;font-weight:700;margin-top:10px;">✓ Year is currently locked.</p>' : '<p style="font-size:12px;color:#666;margin-top:10px;">Year is currently unlocked.</p>'}
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-header"><div class="card-header-title">Membership prompt</div></div>
-      <div class="card-body">
-        <p style="font-size:13px;color:#666;margin-bottom:14px;">When enabled, checking out a non-member will offer to add a membership to their purchase once per session.</p>
-        <button class="btn btn-sm ${appSettings.membershipPrompt ? 'btn-success' : 'btn-outline'}" style="font-size:13px;padding:8px 20px;" onclick="toggleMembershipPrompt()">
-          ${appSettings.membershipPrompt ? '✓ Membership prompt ON' : '✗ Membership prompt OFF'}
-        </button>
-      </div>
-    </div>
-
-    <div class="card">
       <div class="card-header"><div class="card-header-title">Auction years</div></div>
       <div class="card-body">
         <p style="font-size:13px;color:#666;margin-bottom:12px;">Click a year to switch to it. Delete button only appears on inactive years.</p>
@@ -1890,6 +1888,17 @@ async function renderAdminPanel() {
           <p style="font-size:12px;color:#666;margin-bottom:10px;">Creating a new year will set it as the active year. All existing data stays saved. Misc items and donor types will be copied from the current year.</p>
           <button class="btn btn-danger btn-sm" onclick="createNewYear()">Create new auction year</button>
         </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><div class="card-header-title">Data lock</div></div>
+      <div class="card-body">
+        <p style="font-size:13px;color:#666;margin-bottom:14px;">Lock the active year to prevent volunteers from adding, editing, or deleting any data. You can still make changes as admin. Toggle at any time.</p>
+        <button class="btn btn-sm ${appSettings.isLocked ? 'btn-success' : 'btn-danger'}" style="font-size:13px;padding:8px 20px;" onclick="toggleYearLock()">
+          ${appSettings.isLocked ? '🔓 Unlock year — allow changes' : '🔒 Lock year — read-only for volunteers'}
+        </button>
+        ${appSettings.isLocked ? '<p style="font-size:12px;color:#1a6640;font-weight:700;margin-top:10px;">✓ Year is currently locked.</p>' : '<p style="font-size:12px;color:#666;margin-top:10px;">Year is currently unlocked.</p>'}
       </div>
     </div>
 
@@ -1910,6 +1919,16 @@ async function renderAdminPanel() {
         <button class="btn btn-primary btn-sm" onclick="openMiscItemModal()">+ Add item</button>
       </div>
       <div class="card-body">${miscItemsHtml}</div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><div class="card-header-title">Membership prompt</div></div>
+      <div class="card-body">
+        <p style="font-size:13px;color:#666;margin-bottom:14px;">When enabled, checking out a non-member will offer to add a membership to their purchase once per session.</p>
+        <button class="btn btn-sm ${appSettings.membershipPrompt ? 'btn-success' : 'btn-outline'}" style="font-size:13px;padding:8px 20px;" onclick="toggleMembershipPrompt()">
+          ${appSettings.membershipPrompt ? '✓ Membership prompt ON' : '✗ Membership prompt OFF'}
+        </button>
+      </div>
     </div>
 
     <div class="card">
@@ -1955,13 +1974,17 @@ async function renderAdminPanel() {
       <div class="modal">
         <div class="modal-title" id="misc-item-modal-title">Add misc item</div>
         <input type="hidden" id="mi-id" />
-        <div class="form-group"><label>Item name</label><input id="mi-name" type="text" placeholder="e.g. Gold-N Koi Food" /></div>
-        <div class="form-group"><label>Unit price ($)</label><input id="mi-price" type="number" step="0.01" min="0.01" placeholder="0.00" /></div>
+        <div class="form-group"><label>Item name</label><input id="mi-name" type="text" placeholder="e.g. Koi Food" /></div>
+        <div class="form-group"><label>Sale price per unit ($)</label><input id="mi-price" type="number" step="0.01" min="0.01" placeholder="0.00" /></div>
         <div class="form-group"><label>Type</label>
-          <select id="mi-qty">
-            <option value="true">Quantity based (price × qty)</option>
-            <option value="false">Fixed amount (enter $ as quantity)</option>
+          <select id="mi-type" onchange="updateMiscCostField()">
+            <option value="false">No cost — all revenue goes to club</option>
+            <option value="true">Cost based — club pays per unit</option>
           </select>
+        </div>
+        <div class="form-group" id="mi-club-cost-group" style="display:none;">
+          <label>Club cost per unit ($)</label>
+          <input id="mi-club-cost" type="number" step="0.01" min="0" placeholder="0.00" />
         </div>
         <div class="modal-actions">
           <button class="btn btn-outline btn-sm" onclick="closeModal('misc-item-modal')">Cancel</button>
@@ -2097,12 +2120,20 @@ async function deleteDonorType(id) {
   renderAdminPanel();
 }
 
+function updateMiscCostField() {
+  const hasCost = document.getElementById('mi-type')?.value === 'true';
+  const grp = document.getElementById('mi-club-cost-group');
+  if (grp) grp.style.display = hasCost ? 'block' : 'none';
+}
+
 function openMiscItemModal() {
   document.getElementById('misc-item-modal-title').textContent = 'Add misc item';
   document.getElementById('mi-id').value = '';
   document.getElementById('mi-name').value = '';
   document.getElementById('mi-price').value = '';
-  document.getElementById('mi-qty').value = 'true';
+  document.getElementById('mi-type').value = 'false';
+  document.getElementById('mi-club-cost').value = '';
+  document.getElementById('mi-club-cost-group').style.display = 'none';
   document.getElementById('misc-item-modal').classList.add('open');
 }
 
@@ -2113,7 +2144,9 @@ function openEditMiscItemModal(id) {
   document.getElementById('mi-id').value = i.id;
   document.getElementById('mi-name').value = i.name;
   document.getElementById('mi-price').value = i.unit_price;
-  document.getElementById('mi-qty').value = i.is_quantity_based ? 'true' : 'false';
+  document.getElementById('mi-type').value = i.is_quantity_based ? 'true' : 'false';
+  document.getElementById('mi-club-cost').value = i.club_cost || '';
+  document.getElementById('mi-club-cost-group').style.display = i.is_quantity_based ? 'block' : 'none';
   document.getElementById('misc-item-modal').classList.add('open');
 }
 
@@ -2121,14 +2154,22 @@ async function saveMiscItem() {
   const id = document.getElementById('mi-id').value;
   const name = document.getElementById('mi-name').value.trim();
   const unit_price = parseFloat(document.getElementById('mi-price').value);
-  const is_quantity_based = document.getElementById('mi-qty').value === 'true';
-  if (!name || isNaN(unit_price) || unit_price <= 0) { alert('Please fill in item name and a valid price.'); return; }
+  const is_quantity_based = document.getElementById('mi-type').value === 'true';
+  const club_cost = is_quantity_based ? (parseFloat(document.getElementById('mi-club-cost').value) || 0) : 0;
+  if (!name || isNaN(unit_price) || unit_price <= 0) { alert('Please fill in item name and a valid sale price.'); return; }
+  if (is_quantity_based && club_cost < 0) { alert('Club cost cannot be negative.'); return; }
   if (id) {
-    const { error } = await sb.from('misc_items').update({ name, unit_price, is_quantity_based }).eq('id', id);
+    const { error } = await sb.from('misc_items').update({ name, unit_price, is_quantity_based, club_cost }).eq('id', id);
     if (error) { alert('Error: ' + error.message); return; }
   } else {
-    const { error } = await sb.from('misc_items').insert({ name, unit_price, is_quantity_based, year_id: appSettings.activeYearId });
+    const { error } = await sb.from('misc_items').insert({ name, unit_price, is_quantity_based, club_cost, year_id: appSettings.activeYearId });
     if (error) { alert('Error: ' + error.message); return; }
+  }
+  // Backfill club_cost_total on all existing purchases for this item
+  const { data: existingPurchases } = await sb.from('misc_purchases')
+    .select('id, quantity').eq('item_name', name).eq('year_id', appSettings.activeYearId);
+  for (const p of (existingPurchases || [])) {
+    await sb.from('misc_purchases').update({ club_cost_total: Number(p.quantity) * club_cost }).eq('id', p.id);
   }
   closeModal('misc-item-modal');
   renderAdminPanel();
@@ -2173,7 +2214,7 @@ async function createNewYear() {
   await sb.from('settings').update({ is_active: false }).neq('id', data.id);
   const { data: prevMiscItems } = await sb.from('misc_items').select('*').eq('year_id', appSettings.activeYearId);
   for (const item of (prevMiscItems || [])) {
-    await sb.from('misc_items').insert({ name: item.name, unit_price: item.unit_price, is_quantity_based: item.is_quantity_based, year_id: data.id });
+    await sb.from('misc_items').insert({ name: item.name, unit_price: item.unit_price, is_quantity_based: item.is_quantity_based, club_cost: item.club_cost || 0, year_id: data.id });
   }
   const { data: prevDonorTypes } = await sb.from('donor_types').select('*').eq('year_id', appSettings.activeYearId);
   for (const dt of (prevDonorTypes || [])) {
@@ -2203,196 +2244,229 @@ async function changePassword() {
 }
 
 async function exportCSV(table) {
-  const XLSX = await import('https://cdn.jsdelivr.net/npm/xlsx@0.18.5/+esm');
-  const teal = 'FF1a5f7a'; const lightTeal = 'FFe8f4f8'; const navy = 'FF0d3d52';
-  const white = 'FFFFFFFF'; const amber = 'FFfef5e0'; const green = 'FFe0f9f0';
+  const workbook = new ExcelJS.Workbook();
 
-  function headerStyle(bg) {
-    return { fill: { fgColor: { rgb: bg || teal } }, font: { bold: true, color: { rgb: white }, sz: 11 }, alignment: { horizontal: 'center', vertical: 'center', wrapText: true }, border: { bottom: { style: 'thin', color: { rgb: navy } }, right: { style: 'thin', color: { rgb: navy } } } };
-  }
-  function cellStyle(bg, bold, align) {
-    return { fill: { fgColor: { rgb: bg || white } }, font: { bold: !!bold, sz: 10 }, alignment: { horizontal: align || 'left', vertical: 'center' }, border: { bottom: { style: 'hair', color: { rgb: 'FFCCCCCC' } }, right: { style: 'hair', color: { rgb: 'FFCCCCCC' } } } };
-  }
-  function titleStyle() { return { fill: { fgColor: { rgb: navy } }, font: { bold: true, color: { rgb: white }, sz: 14 }, alignment: { horizontal: 'left', vertical: 'center' } }; }
-  function subTitleStyle() { return { fill: { fgColor: { rgb: lightTeal } }, font: { bold: false, color: { rgb: navy }, sz: 10 }, alignment: { horizontal: 'left', vertical: 'center' } }; }
-  function addTitleRows(ws, data, title, subtitle, numCols) {
-    const merge = (r) => ({ s: { r, c: 0 }, e: { r, c: numCols - 1 } });
-    if (!ws['!merges']) ws['!merges'] = [];
-    ws['!merges'].push(merge(0), merge(1));
-    XLSX.utils.sheet_add_aoa(ws, [[title], [subtitle]], { origin: 'A1' });
-    ws['A1'].s = titleStyle(); ws['A2'].s = subTitleStyle();
-  }
-  function setColWidths(ws, widths) { ws['!cols'] = widths.map(w => ({ wch: w })); }
-  function makeCell(value, style) { return { v: value, s: style, t: typeof value === 'number' ? 'n' : 's' }; }
+  // ── Grayscale palette ──────────────────────────────────────────
+  const GS = {
+    titleBg:  'FF1E1E1E', headerBg: 'FF3C3C3C', sectionBg: 'FF5A5A5A',
+    totalBg:  'FFCCCCCC', grandBg:  'FF909090',
+    altRow:   'FFF5F5F5', white:    'FFFFFFFF',
+    textWhite:'FFFFFFFF', textDark: 'FF1E1E1E', textMuted: 'FF666666',
+  };
+  const bd = (style, argb) => ({ style, color: { argb } });
+  const thinAll = { top:bd('thin','FFAAAAAA'), bottom:bd('thin','FFAAAAAA'), left:bd('thin','FFAAAAAA'), right:bd('thin','FFAAAAAA') };
+  const hairAll = { top:bd('hair','FFE0E0E0'), bottom:bd('hair','FFE0E0E0'), left:bd('hair','FFE0E0E0'), right:bd('hair','FFE0E0E0') };
+  const totalBd = { top:bd('thin','FFAAAAAA'), bottom:bd('medium','FF888888'), left:bd('hair','FFE0E0E0'), right:bd('hair','FFE0E0E0') };
+  const grandBd = { top:bd('medium','FF888888'), bottom:bd('medium','FF888888'), left:bd('hair','FFE0E0E0'), right:bd('hair','FFE0E0E0') };
 
-  const wb = XLSX.utils.book_new();
+  const CURR = '#,##0.00';
+  const INT  = '#,##0';
+
+  const S = {
+    title:   () => ({ fill:GS.titleBg,  font:{bold:true,  color:{argb:GS.textWhite}, size:13, name:'Calibri'}, align:{horizontal:'left',   vertical:'middle'}, border:null }),
+    sub:     () => ({ fill:'FFE8E8E8',  font:{bold:false, color:{argb:GS.textMuted}, size:10, name:'Calibri'}, align:{horizontal:'left',   vertical:'middle'}, border:null }),
+    header:  () => ({ fill:GS.headerBg, font:{bold:true,  color:{argb:GS.textWhite}, size:10, name:'Calibri'}, align:{horizontal:'center', vertical:'middle', wrapText:true}, border:thinAll }),
+    row:   (alt,al) => ({ fill:alt?GS.altRow:GS.white, font:{size:10, name:'Calibri', color:{argb:GS.textDark}}, align:{horizontal:al||'left', vertical:'middle'}, border:hairAll }),
+    section: () => ({ fill:GS.sectionBg, font:{bold:true, color:{argb:GS.textWhite}, size:10, name:'Calibri'}, align:{horizontal:'left', vertical:'middle'}, border:thinAll }),
+    total: (al) => ({ fill:GS.totalBg, font:{bold:true, size:10, name:'Calibri', color:{argb:GS.textDark}}, align:{horizontal:al||'right', vertical:'middle'}, border:totalBd }),
+    grand: (al) => ({ fill:GS.grandBg, font:{bold:true, size:10, name:'Calibri', color:{argb:GS.textWhite}}, align:{horizontal:al||'right', vertical:'middle'}, border:grandBd }),
+  };
+
+  function styleCell(cell, st) {
+    cell.fill = { type:'pattern', pattern:'solid', fgColor:{argb:st.fill} };
+    cell.font = st.font;
+    cell.alignment = st.align;
+    if (st.border) cell.border = st.border;
+  }
+
+  function addTitleBlock(ws, ttl, sub, numCols) {
+    const r1 = ws.addRow([ttl]);
+    r1.height = 20;
+    styleCell(r1.getCell(1), S.title());
+    ws.mergeCells(r1.number, 1, r1.number, numCols);
+    const r2 = ws.addRow([sub]);
+    r2.height = 14;
+    styleCell(r2.getCell(1), S.sub());
+    ws.mergeCells(r2.number, 1, r2.number, numCols);
+  }
+
+  function addHeaders(ws, headers, numCols) {
+    const r = ws.addRow(headers);
+    r.height = 16;
+    headers.forEach((_, ci) => styleCell(r.getCell(ci + 1), S.header()));
+    ws.autoFilter = { from: `A${r.number}`, to: `${ws.getColumn(numCols).letter}${r.number}` };
+    ws.views = [{ state:'frozen', ySplit:r.number, topLeftCell:`A${r.number + 1}` }];
+  }
+
+  function writeRow(ws, values, alignMap, fmtMap) {
+    const r = ws.addRow(values);
+    const alt = r.number % 2 !== 0;
+    values.forEach((v, ci) => {
+      const cell = r.getCell(ci + 1);
+      styleCell(cell, S.row(alt, alignMap?.[ci]));
+      if (fmtMap?.[ci] && typeof v === 'number') cell.numFmt = fmtMap[ci];
+    });
+    return r;
+  }
+
+  function writeSectionRow(ws, label, numCols) {
+    const r = ws.addRow([label, ...Array(numCols - 1).fill('')]);
+    for (let c = 1; c <= numCols; c++) styleCell(r.getCell(c), S.section());
+    ws.mergeCells(r.number, 1, r.number, numCols);
+    return r;
+  }
+
+  function writeTotalRow(ws, values, alignMap, fmtMap) {
+    const r = ws.addRow(values);
+    values.forEach((v, ci) => {
+      const cell = r.getCell(ci + 1);
+      styleCell(cell, S.total(alignMap?.[ci] || (typeof v === 'number' ? 'right' : 'left')));
+      if (fmtMap?.[ci] && typeof v === 'number') cell.numFmt = fmtMap[ci];
+    });
+    return r;
+  }
+
+  function writeGrandRow(ws, values, alignMap, fmtMap) {
+    const r = ws.addRow(values);
+    values.forEach((v, ci) => {
+      const cell = r.getCell(ci + 1);
+      styleCell(cell, S.grand(alignMap?.[ci] || (typeof v === 'number' ? 'right' : 'left')));
+      if (fmtMap?.[ci] && typeof v === 'number') cell.numFmt = fmtMap[ci];
+    });
+    return r;
+  }
+
+  function setCols(ws, widths) { widths.forEach((w, i) => { ws.getColumn(i + 1).width = w; }); }
+
+  async function saveWorkbook(wb, filename) {
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
+  }
+
   const title = 'Pikes Peak Koi & Water Garden Society';
   const subtitle = appSettings.auctionTitle;
+  const RIGHT = 'right', LEFT = 'left', CENTER = 'center';
 
   if (table === 'donors') {
     const { data } = await sb.from('donors').select('*').eq('year_id', appSettings.activeYearId).order('last_name');
-    const ws = XLSX.utils.aoa_to_sheet([]);
+    const ws = workbook.addWorksheet('Donors');
     const numCols = 6;
-    addTitleRows(ws, data, title, subtitle, numCols);
-    const headers = ['First Name', 'Last Name', 'Phone', 'Email', 'Type', '# Fish'];
-    XLSX.utils.sheet_add_aoa(ws, [headers], { origin: 'A3' });
-    'ABCDEF'.split('').forEach((col, i) => { ws[`${col}3`] = makeCell(headers[i], headerStyle()); });
-    (data || []).forEach((d, i) => {
-      const row = [d.first_name, d.last_name, d.phone || '', d.email || '', d.type, d.num_fish];
-      const r = 3 + i; const bg = i % 2 === 0 ? white : lightTeal;
-      XLSX.utils.sheet_add_aoa(ws, [row], { origin: { r, c: 0 } });
-      row.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r, c: ci }); ws[addr].s = cellStyle(bg, false, ci === 5 ? 'center' : 'left'); });
-    });
-    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: 3 + (data || []).length, c: numCols - 1 } });
-    setColWidths(ws, [15, 15, 15, 25, 12, 8]);
-    ws['!rows'] = [{ hpt: 22 }, { hpt: 16 }];
-    XLSX.utils.book_append_sheet(wb, ws, 'Donors');
-    XLSX.writeFile(wb, `donors_${appSettings.auctionYear}.xlsx`);
+    addTitleBlock(ws, title, subtitle, numCols);
+    addHeaders(ws, ['First Name', 'Last Name', 'Phone', 'Email', 'Type', '# Fish'], numCols);
+    (data||[]).forEach(d => writeRow(ws, [d.first_name, d.last_name, d.phone||'', d.email||'', d.type, Number(d.num_fish||0)], {5:CENTER}, {5:INT}));
+    writeTotalRow(ws, ['','','','','TOTAL DONORS', (data||[]).length], {4:LEFT, 5:RIGHT}, {5:INT});
+    setCols(ws, [16, 16, 16, 28, 13, 8]);
+    await saveWorkbook(workbook, `donors_${appSettings.auctionYear}.xlsx`);
 
   } else if (table === 'fish') {
-    const { data } = await sb.from('fish').select('*, tanks(letter), donors(first_name, last_name), sales(sale_price)').eq('year_id', appSettings.activeYearId).order('fish_number');
-    const ws = XLSX.utils.aoa_to_sheet([]);
+    const [{ data: fishData }, { data: salesData }] = await Promise.all([
+      sb.from('fish').select('id, fish_number, description, type, tanks(letter), donors(first_name, last_name)').eq('year_id', appSettings.activeYearId).order('fish_number'),
+      sb.from('sales').select('fish_id, sale_price').eq('year_id', appSettings.activeYearId),
+    ]);
+    const salePriceMap = {};
+    (salesData||[]).forEach(s => { salePriceMap[s.fish_id] = Number(s.sale_price); });
+    const sorted = [...(fishData||[])].sort((a,b) => (a.tanks?.letter||'').localeCompare(b.tanks?.letter||'') || (a.fish_number||0)-(b.fish_number||0));
+    const ws = workbook.addWorksheet('Fish');
     const numCols = 6;
-    addTitleRows(ws, data, title, subtitle, numCols);
-    const headers = ['Fish ID', 'Description', 'Donor', 'Type', 'Status', 'Sale Price'];
-    XLSX.utils.sheet_add_aoa(ws, [headers], { origin: 'A3' });
-    'ABCDEF'.split('').forEach((col, i) => { ws[`${col}3`] = makeCell(headers[i], headerStyle()); });
-    (data || []).forEach((f, i) => {
-      const sold = f.sales && f.sales.length > 0;
-      const row = [`${f.tanks?.letter || ''}${f.fish_number}`, f.description, f.donors ? `${f.donors.first_name} ${f.donors.last_name}` : '—', f.type, sold ? 'Sold' : 'Available', sold ? Number(f.sales[0].sale_price) : ''];
-      const r = 3 + i; const bg = sold ? green : (i % 2 === 0 ? white : lightTeal);
-      XLSX.utils.sheet_add_aoa(ws, [row], { origin: { r, c: 0 } });
-      row.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r, c: ci }); ws[addr].s = cellStyle(bg, false, ci === 5 ? 'right' : 'left'); });
+    addTitleBlock(ws, title, subtitle, numCols);
+    addHeaders(ws, ['Fish ID', 'Description', 'Donor', 'Type', 'Status', 'Sale Price'], numCols);
+    let lastTank = null; let soldTotal = 0; let soldCount = 0;
+    sorted.forEach(f => {
+      const tankLetter = f.tanks?.letter || '?';
+      if (tankLetter !== lastTank) { writeSectionRow(ws, `  Tank ${tankLetter}`, numCols); lastTank = tankLetter; }
+      const salePrice = salePriceMap[f.id];
+      const sold = salePrice !== undefined;
+      if (sold) { soldTotal += salePrice; soldCount++; }
+      writeRow(ws, [`${f.tanks?.letter||''}${f.fish_number}`, f.description, f.donors?`${f.donors.first_name} ${f.donors.last_name}`:'—', f.type||'', sold?'Sold':'Available', sold?salePrice:''], {5:RIGHT}, {5:CURR});
     });
-    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: 3 + (data || []).length, c: numCols - 1 } });
-    setColWidths(ws, [10, 30, 20, 12, 12, 12]);
-    ws['!rows'] = [{ hpt: 22 }, { hpt: 16 }];
-    XLSX.utils.book_append_sheet(wb, ws, 'Fish');
-    XLSX.writeFile(wb, `fish_${appSettings.auctionYear}.xlsx`);
+    writeGrandRow(ws, ['', `${soldCount} sold of ${sorted.length} total`, '', '', 'TOTAL AUCTION REVENUE', soldTotal], {1:LEFT, 4:LEFT, 5:RIGHT}, {5:CURR});
+    setCols(ws, [10, 32, 22, 13, 12, 13]);
+    await saveWorkbook(workbook, `fish_${appSettings.auctionYear}.xlsx`);
 
   } else if (table === 'bidders') {
     const { data } = await sb.from('bidders').select('*').eq('year_id', appSettings.activeYearId).order('bidder_number');
-    const ws = XLSX.utils.aoa_to_sheet([]);
-    const numCols = 8;
-    addTitleRows(ws, data, title, subtitle, numCols);
-    const headers = ['Bidder #', 'First Name', 'Last Name', 'Phone', 'Member', 'Payment', 'Status', 'Total Paid'];
-    XLSX.utils.sheet_add_aoa(ws, [headers], { origin: 'A3' });
-    'ABCDEFGH'.split('').forEach((col, i) => { ws[`${col}3`] = makeCell(headers[i], headerStyle()); });
-    (data || []).forEach((b, i) => {
-      const row = [b.bidder_number, b.first_name, b.last_name, b.phone || '', b.is_member ? 'Yes' : 'No', b.payment_method || '', b.is_paid ? 'Paid' : 'Unpaid', b.is_paid ? Number(b.total_paid || 0) : ''];
-      const r = 3 + i; const bg = b.is_paid ? green : (i % 2 === 0 ? white : lightTeal);
-      XLSX.utils.sheet_add_aoa(ws, [row], { origin: { r, c: 0 } });
-      row.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r, c: ci }); ws[addr].s = cellStyle(bg, false, [0, 7].includes(ci) ? 'right' : 'left'); });
-    });
-    const totalCollected = (data || []).reduce((s, b) => s + Number(b.total_paid || 0), 0);
-    const summaryRow = 3 + (data || []).length;
-    const summary = ['', '', '', '', '', '', 'TOTAL COLLECTED', totalCollected];
-    XLSX.utils.sheet_add_aoa(ws, [summary], { origin: { r: summaryRow, c: 0 } });
-    summary.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r: summaryRow, c: ci }); ws[addr] = makeCell(summary[ci], cellStyle(lightTeal, true, ci === 7 ? 'right' : 'left')); });
-    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: summaryRow, c: numCols - 1 } });
-    setColWidths(ws, [10, 15, 15, 15, 8, 14, 10, 12]);
-    ws['!rows'] = [{ hpt: 22 }, { hpt: 16 }];
-    XLSX.utils.book_append_sheet(wb, ws, 'Bidders');
-    XLSX.writeFile(wb, `bidders_${appSettings.auctionYear}.xlsx`);
+    const ws = workbook.addWorksheet('Bidders');
+    const numCols = 7;
+    addTitleBlock(ws, title, subtitle, numCols);
+    addHeaders(ws, ['Bidder #', 'First Name', 'Last Name', 'Phone', 'Member', 'Status', 'Total Paid'], numCols);
+    (data||[]).forEach(b => writeRow(ws, [b.bidder_number, b.first_name, b.last_name, b.phone||'', b.is_member?'Yes':'No', b.is_paid?'Paid':'Unpaid', Number(b.total_paid||0)], {0:RIGHT, 6:RIGHT}, {6:CURR}));
+    const totalCollected = (data||[]).reduce((s,b) => s+Number(b.total_paid||0), 0);
+    writeTotalRow(ws, ['','','','','','TOTAL COLLECTED', totalCollected], {5:LEFT, 6:RIGHT}, {6:CURR});
+    setCols(ws, [10, 16, 16, 16, 9, 12, 14]);
+    await saveWorkbook(workbook, `bidders_${appSettings.auctionYear}.xlsx`);
 
   } else if (table === 'sales') {
     const { data } = await sb.from('sales').select('*, fish(description, fish_number, tanks(letter)), bidders(first_name, last_name, bidder_number)').eq('year_id', appSettings.activeYearId).order('created_at');
-    const ws = XLSX.utils.aoa_to_sheet([]);
+    const ws = workbook.addWorksheet('Sales');
     const numCols = 6;
-    addTitleRows(ws, data, title, subtitle, numCols);
-    const headers = ['Fish ID', 'Description', 'Bidder #', 'Bidder Name', 'Sale Price', 'Date'];
-    XLSX.utils.sheet_add_aoa(ws, [headers], { origin: 'A3' });
-    'ABCDEF'.split('').forEach((col, i) => { ws[`${col}3`] = makeCell(headers[i], headerStyle()); });
-    (data || []).forEach((s, i) => {
-      const row = [`${s.fish?.tanks?.letter || ''}${s.fish?.fish_number || ''}`, s.fish?.description || '', s.bidders?.bidder_number || '', `${s.bidders?.first_name || ''} ${s.bidders?.last_name || ''}`.trim(), Number(s.sale_price), s.created_at ? s.created_at.split('T')[0] : ''];
-      const r = 3 + i; const bg = i % 2 === 0 ? white : lightTeal;
-      XLSX.utils.sheet_add_aoa(ws, [row], { origin: { r, c: 0 } });
-      row.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r, c: ci }); ws[addr].s = cellStyle(bg, false, [2, 4].includes(ci) ? 'right' : 'left'); });
-    });
-    const grandTotal = (data || []).reduce((s, r) => s + Number(r.sale_price), 0);
-    const totalRow = 3 + (data || []).length;
-    const summary = ['', '', '', 'TOTAL', grandTotal, ''];
-    XLSX.utils.sheet_add_aoa(ws, [summary], { origin: { r: totalRow, c: 0 } });
-    summary.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r: totalRow, c: ci }); ws[addr] = makeCell(summary[ci], cellStyle(lightTeal, true, [3, 4].includes(ci) ? 'right' : 'left')); });
-    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: totalRow, c: numCols - 1 } });
-    setColWidths(ws, [10, 30, 10, 20, 12, 14]);
-    ws['!rows'] = [{ hpt: 22 }, { hpt: 16 }];
-    XLSX.utils.book_append_sheet(wb, ws, 'Sales');
-    XLSX.writeFile(wb, `sales_${appSettings.auctionYear}.xlsx`);
+    addTitleBlock(ws, title, subtitle, numCols);
+    addHeaders(ws, ['Fish ID', 'Description', 'Bidder #', 'Bidder Name', 'Sale Price', 'Date'], numCols);
+    (data||[]).forEach(s => writeRow(ws, [`${s.fish?.tanks?.letter||''}${s.fish?.fish_number||''}`, s.fish?.description||'', s.bidders?.bidder_number||'', `${s.bidders?.first_name||''} ${s.bidders?.last_name||''}`.trim(), Number(s.sale_price), s.created_at?s.created_at.split('T')[0]:''], {2:RIGHT, 4:RIGHT}, {4:CURR}));
+    const grandTotal = (data||[]).reduce((s,r) => s+Number(r.sale_price), 0);
+    writeTotalRow(ws, ['','','','TOTAL AUCTION SALES', grandTotal, ''], {3:LEFT, 4:RIGHT}, {4:CURR});
+    setCols(ws, [10, 32, 10, 22, 13, 14]);
+    await saveWorkbook(workbook, `sales_${appSettings.auctionYear}.xlsx`);
 
   } else if (table === 'misc_purchases') {
-    const { data } = await sb.from('misc_purchases').select('*, bidders(first_name, last_name, bidder_number)').eq('year_id', appSettings.activeYearId).order('created_at');
-    const ws = XLSX.utils.aoa_to_sheet([]);
-    const numCols = 6;
-    addTitleRows(ws, data, title, subtitle, numCols);
-    const headers = ['Bidder #', 'Bidder Name', 'Item', 'Qty', 'Unit Price', 'Total'];
-    XLSX.utils.sheet_add_aoa(ws, [headers], { origin: 'A3' });
-    'ABCDEF'.split('').forEach((col, i) => { ws[`${col}3`] = makeCell(headers[i], headerStyle()); });
-    (data || []).forEach((p, i) => {
-      const row = [p.bidders?.bidder_number || '', `${p.bidders?.first_name || ''} ${p.bidders?.last_name || ''}`.trim(), p.item_name, Number(p.quantity), Number(p.unit_price), Number(p.total_price)];
-      const r = 3 + i; const bg = i % 2 === 0 ? white : lightTeal;
-      XLSX.utils.sheet_add_aoa(ws, [row], { origin: { r, c: 0 } });
-      row.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r, c: ci }); ws[addr].s = cellStyle(bg, false, [0, 3, 4, 5].includes(ci) ? 'right' : 'left'); });
+    const [{ data }, { data: exportMiscItems }] = await Promise.all([
+      sb.from('misc_purchases').select('*, bidders(first_name, last_name, bidder_number)').eq('year_id', appSettings.activeYearId).order('created_at'),
+      sb.from('misc_items').select('name, is_quantity_based, club_cost').eq('year_id', appSettings.activeYearId),
+    ]);
+    const exportItemCostMap = {};
+    (exportMiscItems||[]).forEach(i => { exportItemCostMap[i.name] = i.is_quantity_based ? Number(i.club_cost||0) : 0; });
+    const ws = workbook.addWorksheet('Misc Purchases');
+    const numCols = 8;
+    addTitleBlock(ws, title, subtitle, numCols);
+    addHeaders(ws, ['Bidder #', 'Bidder Name', 'Item', 'Qty', 'Unit Price', 'Revenue', 'Club Cost', 'Net'], numCols);
+    (data||[]).forEach(p => {
+      const clubCost = Number(p.quantity) * (exportItemCostMap[p.item_name]||0);
+      writeRow(ws, [p.bidders?.bidder_number||'', `${p.bidders?.first_name||''} ${p.bidders?.last_name||''}`.trim(), p.item_name, Number(p.quantity), Number(p.unit_price), Number(p.total_price), clubCost, Number(p.total_price)-clubCost], {0:RIGHT, 3:RIGHT, 4:RIGHT, 5:RIGHT, 6:RIGHT, 7:RIGHT}, {3:INT, 4:CURR, 5:CURR, 6:CURR, 7:CURR});
     });
-    const grandTotal = (data || []).reduce((s, r) => s + Number(r.total_price), 0);
-    const totalRow = 3 + (data || []).length;
-    const summary = ['', '', '', '', 'TOTAL', grandTotal];
-    XLSX.utils.sheet_add_aoa(ws, [summary], { origin: { r: totalRow, c: 0 } });
-    summary.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r: totalRow, c: ci }); ws[addr] = makeCell(summary[ci], cellStyle(lightTeal, true, [4, 5].includes(ci) ? 'right' : 'left')); });
-    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: totalRow, c: numCols - 1 } });
-    setColWidths(ws, [10, 20, 25, 8, 12, 12]);
-    ws['!rows'] = [{ hpt: 22 }, { hpt: 16 }];
-    XLSX.utils.book_append_sheet(wb, ws, 'Misc Purchases');
-    XLSX.writeFile(wb, `misc_${appSettings.auctionYear}.xlsx`);
+    const tRev  = (data||[]).reduce((s,r) => s+Number(r.total_price), 0);
+    const tCost = (data||[]).reduce((s,r) => s+Number(r.quantity)*(exportItemCostMap[r.item_name]||0), 0);
+    writeTotalRow(ws, ['','','','','TOTALS', tRev, tCost, tRev-tCost], {4:LEFT, 5:RIGHT, 6:RIGHT, 7:RIGHT}, {5:CURR, 6:CURR, 7:CURR});
+    setCols(ws, [10, 22, 26, 6, 11, 12, 12, 12]);
+    await saveWorkbook(workbook, `misc_${appSettings.auctionYear}.xlsx`);
 
   } else if (table === 'donor_payouts') {
-    const { data: donors } = await sb.from('donors').select('*').eq('year_id', appSettings.activeYearId).order('last_name');
-    const { data: fish } = await sb.from('fish').select('*, tanks(letter), sales(sale_price)').eq('year_id', appSettings.activeYearId);
-    const ws = XLSX.utils.aoa_to_sheet([]);
+    const [{ data: donors }, { data: fish }, { data: salesData }] = await Promise.all([
+      sb.from('donors').select('*').eq('year_id', appSettings.activeYearId).order('last_name'),
+      sb.from('fish').select('id, fish_number, description, donor_id, donor_percent, tanks(letter)').eq('year_id', appSettings.activeYearId),
+      sb.from('sales').select('fish_id, sale_price').eq('year_id', appSettings.activeYearId),
+    ]);
+    const salePriceMap = {};
+    (salesData||[]).forEach(s => { salePriceMap[s.fish_id] = Number(s.sale_price); });
+    const ws = workbook.addWorksheet('Donor Payouts');
     const numCols = 7;
-    addTitleRows(ws, [], title, subtitle, numCols);
-    const headers = ['Donor', 'Type', 'Payout %', 'Fish ID', 'Description', 'Sale Price', 'Donor Payout'];
-    XLSX.utils.sheet_add_aoa(ws, [headers], { origin: 'A3' });
-    'ABCDEFG'.split('').forEach((col, i) => { ws[`${col}3`] = makeCell(headers[i], headerStyle()); });
-    let currentRow = 4;
-    for (const donor of (donors || [])) {
-      const donorFish = (fish || []).filter(f => f.donor_id === donor.id);
+    addTitleBlock(ws, title, subtitle, numCols);
+    addHeaders(ws, ['Donor', 'Type', 'Payout %', 'Fish ID', 'Description', 'Sale Price', 'Donor Payout'], numCols);
+    for (const donor of (donors||[])) {
+      const donorFish = (fish||[]).filter(f => f.donor_id === donor.id);
       const donorName = `${donor.first_name} ${donor.last_name}`;
+      writeSectionRow(ws, `  ${donorName}  (${donor.type})`, numCols);
       let donorTotal = 0; let donorPayout = 0;
       for (const f of donorFish) {
-        const sold = f.sales && f.sales.length > 0;
-        const salePrice = sold ? Number(f.sales[0].sale_price) : 0;
-        const fishPercent = Number(f.donor_percent || 0);
+        const salePrice = salePriceMap[f.id] || 0;
+        const fishPercent = Number(f.donor_percent||0);
         const fishPayout = salePrice * fishPercent;
-        const percentLabel = `${(fishPercent * 100).toFixed(0)}%`;
         donorTotal += salePrice; donorPayout += fishPayout;
-        const row = [donorName, donor.type, percentLabel, `${f.tanks?.letter || ''}${f.fish_number}`, f.description, sold ? salePrice : '', sold && fishPayout > 0 ? fishPayout : ''];
-        const bg = sold ? green : (currentRow % 2 === 0 ? white : lightTeal);
-        XLSX.utils.sheet_add_aoa(ws, [row], { origin: { r: currentRow - 1, c: 0 } });
-        row.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r: currentRow - 1, c: ci }); ws[addr].s = cellStyle(bg, false, [5, 6].includes(ci) ? 'right' : 'left'); });
-        currentRow++;
+        writeRow(ws, [donorName, donor.type, `${(fishPercent*100).toFixed(0)}%`, `${f.tanks?.letter||''}${f.fish_number}`, f.description, salePrice||'', fishPayout||''], {5:RIGHT, 6:RIGHT}, {5:CURR, 6:CURR});
       }
-      const summaryPercentLabel = donorFish.length > 0 ? `${(Number(donorFish[0].donor_percent || 0) * 100).toFixed(0)}%` : '—';
-      const summaryRow = [donorName, donor.type, summaryPercentLabel, '', 'TOTAL OWED TO DONOR', donorTotal > 0 ? donorTotal : '', donorPayout > 0 ? donorPayout : ''];
-      XLSX.utils.sheet_add_aoa(ws, [summaryRow], { origin: { r: currentRow - 1, c: 0 } });
-      summaryRow.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r: currentRow - 1, c: ci }); ws[addr] = makeCell(summaryRow[ci], cellStyle(amber, true, [5, 6].includes(ci) ? 'right' : 'left')); });
-      currentRow++;
-      const blankRow = ['', '', '', '', '', '', ''];
-      XLSX.utils.sheet_add_aoa(ws, [blankRow], { origin: { r: currentRow - 1, c: 0 } });
-      blankRow.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r: currentRow - 1, c: ci }); ws[addr] = makeCell('', cellStyle(white, false)); });
-      currentRow++;
+      writeTotalRow(ws, ['','','','','OWED TO DONOR', donorTotal, donorPayout], {4:LEFT, 5:RIGHT, 6:RIGHT}, {5:CURR, 6:CURR});
     }
-    const grandTotal = (fish || []).filter(f => f.sales && f.sales.length > 0).reduce((s, f) => {
-      return s + Number(f.sales[0].sale_price) * Number(f.donor_percent || 0);
+    const grandSales  = (salesData||[]).reduce((s,r) => s+Number(r.sale_price), 0);
+    const grandPayout = (salesData||[]).reduce((s,r) => {
+      const f = (fish||[]).find(fi => fi.id === r.fish_id);
+      return s + Number(r.sale_price) * Number(f?.donor_percent||0);
     }, 0);
-    const grandRow = ['', '', '', '', 'GRAND TOTAL OWED TO ALL DONORS', '', grandTotal];
-    XLSX.utils.sheet_add_aoa(ws, [grandRow], { origin: { r: currentRow - 1, c: 0 } });
-    grandRow.forEach((_, ci) => { const addr = XLSX.utils.encode_cell({ r: currentRow - 1, c: ci }); ws[addr] = makeCell(grandRow[ci], cellStyle(teal, true, [5, 6].includes(ci) ? 'right' : 'left')); if (ws[addr].s.font) ws[addr].s.font.color = { rgb: white }; });
-    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: currentRow, c: numCols - 1 } });
-    setColWidths(ws, [22, 12, 10, 10, 28, 12, 14]);
-    ws['!rows'] = [{ hpt: 22 }, { hpt: 16 }];
-    XLSX.utils.book_append_sheet(wb, ws, 'Donor Payouts');
-    XLSX.writeFile(wb, `donor_payouts_${appSettings.auctionYear}.xlsx`);
+    writeGrandRow(ws, ['','','','','GRAND TOTAL OWED TO ALL DONORS', grandSales, grandPayout], {4:LEFT, 5:RIGHT, 6:RIGHT}, {5:CURR, 6:CURR});
+    setCols(ws, [22, 13, 10, 10, 28, 13, 15]);
+    await saveWorkbook(workbook, `donor_payouts_${appSettings.auctionYear}.xlsx`);
   }
 }
 
