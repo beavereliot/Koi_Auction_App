@@ -715,10 +715,10 @@ async function renderFish() {
                             <td>${sold ? `<span class="badge badge-sold">Sold $${fishSale.sale_price}</span>${bidderNum ? ` <span style="font-size:11px;color:#888;font-weight:600;">Bidder #${bidderNum}</span>` : ''}` : '<span class="badge badge-unsold">Available</span>'}</td>
                             <td>${paymentBadge}</td>
                             <td>
-                              ${lockIf(`<button class="btn btn-warning btn-xs" onclick="openEditFishModal('${f.id}')">Edit</button>
                               ${paidFishIds.has(f.id)
                                 ? '<span style="font-size:11px;color:#0a6640;font-weight:600;">🔒 Paid</span>'
-                                : `<button class="btn btn-danger btn-xs" onclick="deleteFish('${f.id}')">Delete</button>`}`)}
+                                : lockIf(`<button class="btn btn-warning btn-xs" onclick="openEditFishModal('${f.id}')">Edit</button>
+                              <button class="btn btn-danger btn-xs" onclick="deleteFish('${f.id}')">Delete</button>`)}
                             </td>
                           </tr>`;
                       }).join('')}
