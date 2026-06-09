@@ -1233,8 +1233,25 @@ async function _swSubmit() {
 async function renderScribe() {
   setContent('<p style="color:#4db8d4;padding:1rem;">Loading scribe...</p>');
 
-  const { data: tanks } = await sb.from('tanks').select('*').eq('year_id', appSettings.activeYearId).order('letter');
-  const { data: sales } = await sb.from('sales').select('*, fish(description, fish_number, tanks(letter), donors(first_name, last_name)), bidders(first_name, last_name, bidder_number)').eq('year_id', appSettings.activeYearId).order('created_at', { ascending: false });
+  const [{ data: tanks }, { data: sales }, { data: scribePayments }] = await Promise.all([
+    sb.from('tanks').select('*').eq('year_id', appSettings.activeYearId).order('letter'),
+    sb.from('sales').select('*, fish(description, fish_number, tanks(letter), donors(first_name, last_name)), bidders(first_name, last_name, bidder_number)').eq('year_id', appSettings.activeYearId).order('created_at', { ascending: false }),
+    sb.from('payments').select('bidder_id, amount').eq('year_id', appSettings.activeYearId),
+  ]);
+
+  // FIFO: determine which fish have been paid for
+  const scribePaidFishIds = new Set();
+  const scribeBidderIds = [...new Set((sales||[]).map(s => s.bidder_id))].filter(Boolean);
+  for (const bId of scribeBidderIds) {
+    const totalPaid = (scribePayments||[]).filter(p => p.bidder_id === bId).reduce((s,r) => s+Number(r.amount), 0);
+    if (totalPaid <= 0) continue;
+    const bSales = (sales||[]).filter(s => s.bidder_id === bId).sort((a,b) => new Date(a.created_at)-new Date(b.created_at));
+    let covered = totalPaid;
+    for (const s of bSales) {
+      const price = Number(s.sale_price);
+      if (covered >= price - 0.01) { scribePaidFishIds.add(s.fish_id); covered -= price; } else break;
+    }
+  }
 
   let sortedSales = [...(sales || [])];
   if (scribeSortOrder === 'tank') {
@@ -1280,18 +1297,21 @@ async function renderScribe() {
         <table class="table">
           <thead><tr><th>Fish</th><th>Description</th><th>Bidder</th><th style="text-align:right;">Price</th><th>Actions</th></tr></thead>
           <tbody>
-            ${sortedSales.map(s => `
+            ${sortedSales.map(s => {
+              const isPaidSale = scribePaidFishIds.has(s.fish_id);
+              return `
               <tr>
                 <td><span class="fish-id">${s.fish?.tanks?.letter || '?'}${s.fish?.fish_number || '?'}</span></td>
                 <td>${s.fish?.description || '—'}</td>
                 <td>#${s.bidders?.bidder_number} ${s.bidders?.last_name || ''}</td>
                 <td style="text-align:right;font-weight:bold;">$${Number(s.sale_price).toFixed(2)}</td>
-                <td style="display:flex;gap:4px;">
-                  ${lockIf(`<button class="btn btn-warning btn-xs" onclick="openEditSaleModal('${s.id}','${s.fish?.tanks?.letter || ''}${s.fish?.fish_number || ''}',${s.bidders?.bidder_number || 0},${s.sale_price})">Edit</button>
+                <td style="display:flex;gap:4px;align-items:center;">
+                  ${isPaidSale
+                    ? '<span style="font-size:11px;color:#0a6640;font-weight:600;">🔒 Paid</span>'
+                    : lockIf(`<button class="btn btn-warning btn-xs" onclick="openEditSaleModal('${s.id}','${s.fish?.tanks?.letter || ''}${s.fish?.fish_number || ''}',${s.bidders?.bidder_number || 0},${s.sale_price})">Edit</button>
                   <button class="btn btn-danger btn-xs" onclick="deleteSale('${s.id}')">Delete</button>`)}
                 </td>
-              </tr>
-            `).join('')}
+              </tr>`; }).join('')}
           </tbody>
         </table>` : '<div class="empty-state">No sales recorded yet.</div>'}
       </div>
@@ -1388,9 +1408,9 @@ async function saveEditSale() {
     if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
     return;
   }
-  // Block reassignment if the fish has already been paid for (FIFO check)
+  // Block any edit if the fish has already been paid for (FIFO check)
   const { data: currentSale } = await sb.from('sales').select('fish_id, bidder_id').eq('id', id).single();
-  if (currentSale && currentSale.bidder_id !== bidderData.id) {
+  if (currentSale) {
     const [{ data: curPayments }, { data: curBidderSales }] = await Promise.all([
       sb.from('payments').select('amount').eq('bidder_id', currentSale.bidder_id),
       sb.from('sales').select('fish_id, sale_price, created_at').eq('bidder_id', currentSale.bidder_id).order('created_at'),
@@ -1401,7 +1421,7 @@ async function saveEditSale() {
       const price = Number(s.sale_price);
       if (covered >= price - 0.01) {
         if (s.fish_id === currentSale.fish_id) {
-          alert('This fish has already been paid for and cannot be reassigned to a different bidder. Issue a refund first if a correction is needed.');
+          alert('This sale cannot be edited — it has already been paid for. Issue a refund first if a correction is needed.');
           if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
           return;
         }
@@ -1465,6 +1485,26 @@ async function recordSale() {
 }
 
 async function deleteSale(id) {
+  // Block deletion if the fish has already been paid for (FIFO check)
+  const { data: saleToDelete } = await sb.from('sales').select('fish_id, bidder_id').eq('id', id).single();
+  if (saleToDelete) {
+    const [{ data: delPayments }, { data: delBidderSales }] = await Promise.all([
+      sb.from('payments').select('amount').eq('bidder_id', saleToDelete.bidder_id),
+      sb.from('sales').select('fish_id, sale_price, created_at').eq('bidder_id', saleToDelete.bidder_id).order('created_at'),
+    ]);
+    const totalPaid = (delPayments||[]).reduce((s,r) => s+Number(r.amount), 0);
+    let covered = totalPaid;
+    for (const s of (delBidderSales||[])) {
+      const price = Number(s.sale_price);
+      if (covered >= price - 0.01) {
+        if (s.fish_id === saleToDelete.fish_id) {
+          alert('This sale cannot be deleted — it has already been paid for. Issue a refund first if a correction is needed.');
+          return;
+        }
+        covered -= price;
+      } else break;
+    }
+  }
   if (!window.confirm('Delete this sale record? This cannot be undone.')) return;
   const { error } = await sb.from('sales').delete().eq('id', id);
   if (error) { alert('Error: ' + error.message); return; }
@@ -1598,9 +1638,12 @@ async function loadCheckout() {
         <hr class="divider">
         <p style="font-size:12px;font-weight:bold;color:#1a5f7a;margin-bottom:6px;">Payment history</p>
         ${payments.map(p => `
-          <div class="total-row">
+          <div class="total-row" style="align-items:center;">
             <span style="font-size:13px;">✓ ${p.payment_method}${p.payment_reference ? ' (' + p.payment_reference + ')' : ''} — ${p.created_at ? new Date(p.created_at).toLocaleDateString() : ''}</span>
-            <span style="color:#0a6640;font-weight:bold;">$${Number(p.amount).toFixed(2)}</span>
+            <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+              <span style="color:#0a6640;font-weight:bold;">$${Number(p.amount).toFixed(2)}</span>
+              ${lockIf(`<button class="btn btn-danger btn-xs" onclick="refundPayment('${p.id}','${bidder.id}')">Refund</button>`)}
+            </div>
           </div>
         `).join('')}
         <div class="total-row" style="margin-top:6px;">
@@ -1708,6 +1751,24 @@ async function recordPayment(bidderId, grandTotal) {
   await sb.from('bidders').update({ is_paid: isPaid, payment_method, payment_reference, total_paid: totalPaid }).eq('id', bidderId);
   msg.innerHTML = '<div class="alert alert-success">Payment recorded!</div>';
   setTimeout(() => loadCheckout(), 1000);
+}
+
+async function refundPayment(paymentId, bidderId) {
+  if (!window.confirm('Refund this payment? The payment record will be deleted and any fish it covered will be marked unpaid again.')) return;
+  const { error } = await sb.from('payments').delete().eq('id', paymentId);
+  if (error) { alert('Error: ' + error.message); return; }
+  // Recalculate and update bidder paid status
+  const [{ data: remainingPayments }, { data: bidderSales }, { data: bidderMisc }] = await Promise.all([
+    sb.from('payments').select('amount').eq('bidder_id', bidderId),
+    sb.from('sales').select('sale_price').eq('bidder_id', bidderId),
+    sb.from('misc_purchases').select('total_price').eq('bidder_id', bidderId),
+  ]);
+  const newTotalPaid = (remainingPayments||[]).reduce((s,r) => s+Number(r.amount), 0);
+  const totalOwed = (bidderSales||[]).reduce((s,r) => s+Number(r.sale_price), 0)
+                  + (bidderMisc||[]).reduce((s,r) => s+Number(r.total_price), 0);
+  const isPaid = totalOwed > 0 && newTotalPaid >= totalOwed - 0.01;
+  await sb.from('bidders').update({ is_paid: isPaid, total_paid: newTotalPaid }).eq('id', bidderId);
+  loadCheckout();
 }
 
 async function printReceipt(bidderId) {
