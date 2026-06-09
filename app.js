@@ -1324,11 +1324,13 @@ async function renderScribe() {
                 <td>${s.fish?.description || '—'}</td>
                 <td>#${s.bidders?.bidder_number} ${s.bidders?.last_name || ''}</td>
                 <td style="text-align:right;font-weight:bold;">$${Number(s.sale_price).toFixed(2)}</td>
-                <td style="display:flex;gap:4px;align-items:center;">
-                  ${isPaidSale
-                    ? '<span style="font-size:11px;color:#0a6640;font-weight:600;">🔒 Paid</span>'
-                    : lockIf(`<button class="btn btn-warning btn-xs" onclick="openEditSaleModal('${s.id}','${s.fish?.tanks?.letter || ''}${s.fish?.fish_number || ''}',${s.bidders?.bidder_number || 0},${s.sale_price})">Edit</button>
-                  <button class="btn btn-danger btn-xs" onclick="deleteSale('${s.id}')">Delete</button>`)}
+                <td>
+                  <div style="display:flex;gap:4px;align-items:center;">
+                    ${isPaidSale
+                      ? '<span style="font-size:11px;color:#0a6640;font-weight:600;">🔒 Paid</span>'
+                      : lockIf(`<button class="btn btn-warning btn-xs" onclick="openEditSaleModal('${s.id}','${s.fish?.tanks?.letter || ''}${s.fish?.fish_number || ''}',${s.bidders?.bidder_number || 0},${s.sale_price})">Edit</button>
+                    <button class="btn btn-danger btn-xs" onclick="deleteSale('${s.id}')">Delete</button>`)}
+                  </div>
                 </td>
               </tr>`; }).join('')}
           </tbody>
