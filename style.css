@@ -286,6 +286,17 @@ body {
 .donor-row-expandable { cursor: pointer; }
 .donor-row-expandable:hover td { background: rgba(201,169,105,0.13); }
 
+/* ─── Sale wizard large-font mode ─────────── */
+#sale-wizard-modal .modal.sw-large { font-size: 18px; }
+#sale-wizard-modal .modal.sw-large .modal-title { font-size: 20px; }
+#sale-wizard-modal .modal.sw-large .wizard-btn { font-size: 18px; padding: 14px 18px; min-height: 58px; }
+#sale-wizard-modal .modal.sw-large label { font-size: 16px; }
+#sale-wizard-modal .modal.sw-large input,
+#sale-wizard-modal .modal.sw-large select { font-size: 18px; padding: 10px 12px; }
+#sale-wizard-modal .modal.sw-large .btn { font-size: 16px; padding: 10px 18px; }
+#sale-wizard-modal .modal.sw-large .fish-id { font-size: 18px; }
+#sale-wizard-modal .modal.sw-large .bidder-name-display { font-size: 16px; }
+
 /* ─── Badges ───────────────────────────────── */
 .badge {
   display: inline-block; font-size: 11px; font-weight: 700;

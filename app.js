@@ -614,7 +614,7 @@ async function renderFish() {
     sb.from('tanks').select('*').eq('year_id', appSettings.activeYearId).order('letter'),
     sb.from('fish').select('*, tanks(letter), donors(id, first_name, last_name, type)').eq('year_id', appSettings.activeYearId).order('fish_number'),
     sb.from('donors').select('id, first_name, last_name, type').eq('year_id', appSettings.activeYearId).order('last_name'),
-    sb.from('sales').select('fish_id, sale_price, bidder_id').eq('year_id', appSettings.activeYearId),
+    sb.from('sales').select('fish_id, sale_price, bidder_id, created_at').eq('year_id', appSettings.activeYearId),
   ]);
 
   const salesMap = {};
@@ -622,26 +622,30 @@ async function renderFish() {
 
   const allBidderIds = [...new Set((yearSales || []).map(s => s.bidder_id))].filter(Boolean);
   const bidderNumberMap = {};
-  const paidBidderIds = new Set();
+  const paidFishIds = new Set();
 
-  const [{ data: allPaymentsData }, { data: allMiscData }] = await Promise.all([
-    sb.from('payments').select('bidder_id, amount').eq('year_id', appSettings.activeYearId),
-    sb.from('misc_purchases').select('bidder_id, total_price').eq('year_id', appSettings.activeYearId),
-  ]);
+  const { data: allPaymentsData } = await sb.from('payments').select('bidder_id, amount').eq('year_id', appSettings.activeYearId);
 
   if (allBidderIds.length > 0) {
     const { data: bidderData } = await sb.from('bidders').select('id, bidder_number').in('id', allBidderIds);
     (bidderData || []).forEach(b => { bidderNumberMap[b.id] = b.bidder_number; });
 
-    const salesByBidder = {};
-    (yearSales || []).forEach(s => {
-      salesByBidder[s.bidder_id] = (salesByBidder[s.bidder_id] || 0) + Number(s.sale_price);
-    });
+    // FIFO payment allocation: mark individual fish as paid based on payment amount
+    // covering them in chronological order (oldest fish first)
     for (const bidderId of allBidderIds) {
-      const owed = (salesByBidder[bidderId] || 0)
-        + (allMiscData || []).filter(m => m.bidder_id === bidderId).reduce((s, r) => s + Number(r.total_price), 0);
-      const paid = (allPaymentsData || []).filter(p => p.bidder_id === bidderId).reduce((s, r) => s + Number(r.amount), 0);
-      if (owed > 0 && paid >= owed - 0.01) paidBidderIds.add(bidderId);
+      const totalPaid = (allPaymentsData || [])
+        .filter(p => p.bidder_id === bidderId)
+        .reduce((s, r) => s + Number(r.amount), 0);
+      if (totalPaid <= 0) continue;
+      const sortedSales = (yearSales || [])
+        .filter(s => s.bidder_id === bidderId)
+        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+      let covered = totalPaid;
+      for (const sale of sortedSales) {
+        const price = Number(sale.sale_price);
+        if (covered >= price - 0.01) { paidFishIds.add(sale.fish_id); covered -= price; }
+        else break;
+      }
     }
   }
 
@@ -698,7 +702,7 @@ async function renderFish() {
                         const fishSale = salesMap[f.id];
                         const sold = !!fishSale;
                         const bidderNum = sold ? (bidderNumberMap[fishSale.bidder_id] || '') : '';
-                        const bidderPaid = sold && paidBidderIds.has(fishSale.bidder_id);
+                        const bidderPaid = sold && paidFishIds.has(f.id);
                         const paymentBadge = !sold ? '—' : bidderPaid
                           ? '<span class="badge badge-sold-paid">Paid</span>'
                           : '<span class="badge badge-sold-unpaid">Unpaid</span>';
@@ -1112,6 +1116,7 @@ let scribeSortOrder = 'recency';
 let _swTank = null;
 let _swFishList = [];
 let _swFish = null;
+let _swLargeFont = false;
 
 async function openSaleWizard() {
   _swTank = null; _swFishList = []; _swFish = null;
@@ -1254,7 +1259,10 @@ async function renderScribe() {
       </div>
     </div>
     <div class="modal-overlay" id="sale-wizard-modal">
-      <div class="modal"><div id="sale-wizard-content"></div></div>
+      <div class="modal${_swLargeFont ? ' sw-large' : ''}" style="position:relative;">
+        <button onclick="toggleSwZoom()" id="sw-zoom-btn" style="position:absolute;top:10px;right:10px;z-index:2;background:none;border:1px solid #bbb;border-radius:6px;padding:4px 9px;font-size:13px;cursor:pointer;color:#555;" title="Toggle large text for easier reading">${_swLargeFont ? '🔍−' : '🔍+'}</button>
+        <div id="sale-wizard-content"></div>
+      </div>
     </div>`}
     <div class="card">
       <div class="card-header"><div class="card-header-title">Sales log</div></div>
@@ -1380,6 +1388,27 @@ async function saveEditSale() {
     if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
     return;
   }
+  // Block reassignment if the fish has already been paid for (FIFO check)
+  const { data: currentSale } = await sb.from('sales').select('fish_id, bidder_id').eq('id', id).single();
+  if (currentSale && currentSale.bidder_id !== bidderData.id) {
+    const [{ data: curPayments }, { data: curBidderSales }] = await Promise.all([
+      sb.from('payments').select('amount').eq('bidder_id', currentSale.bidder_id),
+      sb.from('sales').select('fish_id, sale_price, created_at').eq('bidder_id', currentSale.bidder_id).order('created_at'),
+    ]);
+    const totalPaid = (curPayments || []).reduce((s, r) => s + Number(r.amount), 0);
+    let covered = totalPaid;
+    for (const s of (curBidderSales || [])) {
+      const price = Number(s.sale_price);
+      if (covered >= price - 0.01) {
+        if (s.fish_id === currentSale.fish_id) {
+          alert('This fish has already been paid for and cannot be reassigned to a different bidder. Issue a refund first if a correction is needed.');
+          if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+          return;
+        }
+        covered -= price;
+      } else break;
+    }
+  }
   const { error } = await sb.from('sales').update({ bidder_id: bidderData.id, sale_price: salePrice }).eq('id', id);
   if (error) { alert('Error: ' + error.message); if (btn) { btn.disabled = false; btn.textContent = 'Save'; } return; }
   closeModal('edit-sale-modal');
@@ -1440,6 +1469,14 @@ async function deleteSale(id) {
   const { error } = await sb.from('sales').delete().eq('id', id);
   if (error) { alert('Error: ' + error.message); return; }
   renderScribe();
+}
+
+function toggleSwZoom() {
+  _swLargeFont = !_swLargeFont;
+  const modal = document.querySelector('#sale-wizard-modal .modal');
+  if (modal) modal.classList.toggle('sw-large', _swLargeFont);
+  const btn = document.getElementById('sw-zoom-btn');
+  if (btn) btn.textContent = _swLargeFont ? '🔍−' : '🔍+';
 }
 
 // ============================================
@@ -1756,6 +1793,7 @@ async function renderMisc() {
         </div>
         <div class="form-group"><label>Item</label>
           <select id="m-item">
+            <option value="">— Select an item —</option>
             ${(items || []).map(i => `<option value="${i.id}" data-price="${i.unit_price}" data-club-cost="${i.club_cost || 0}">${i.name} — $${i.unit_price}${i.is_quantity_based ? ' (club cost $' + Number(i.club_cost || 0).toFixed(2) + '/unit)' : ''}</option>`).join('')}
           </select>
         </div>
@@ -1850,8 +1888,13 @@ async function saveMiscPurchase() {
   const bidderNum = parseInt(document.getElementById('m-bidder').value);
   const select = document.getElementById('m-item');
   const msg = document.getElementById('misc-msg');
-  if (!select || select.options.length === 0 || select.selectedIndex < 0) {
+  if (!select || select.options.length <= 1) {
     msg.innerHTML = '<div class="alert alert-error">No items available. Please add items in the Admin panel first.</div>';
+    if (btn) { btn.disabled = false; btn.textContent = '+ Add purchase'; }
+    return;
+  }
+  if (!select.value) {
+    msg.innerHTML = '<div class="alert alert-error">Please select an item.</div>';
     if (btn) { btn.disabled = false; btn.textContent = '+ Add purchase'; }
     return;
   }
@@ -2458,12 +2501,12 @@ async function exportCSV(table, btn = null) {
   if (table === 'donors') {
     const { data } = await sb.from('donors').select('*').eq('year_id', appSettings.activeYearId).order('last_name');
     const ws = workbook.addWorksheet('Donors');
-    const numCols = 6;
+    const numCols = 7;
     addTitleBlock(ws, title, subtitle, numCols);
-    addHeaders(ws, ['First Name', 'Last Name', 'Phone', 'Email', 'Type', '# Fish'], numCols);
-    (data||[]).forEach(d => writeRow(ws, [d.first_name, d.last_name, d.phone||'', d.email||'', d.type, Number(d.num_fish||0)], {5:CENTER}, {5:INT}));
-    writeTotalRow(ws, ['','','','','TOTAL DONORS', (data||[]).length], {4:LEFT, 5:RIGHT}, {5:INT});
-    setCols(ws, [16, 16, 16, 28, 13, 8]);
+    addHeaders(ws, ['First Name', 'Last Name', 'Phone', 'Email', 'Type', '# Fish', 'Address'], numCols);
+    (data||[]).forEach(d => writeRow(ws, [d.first_name, d.last_name, d.phone||'', d.email||'', d.type, Number(d.num_fish||0), d.address||''], {5:CENTER}, {5:INT}));
+    writeTotalRow(ws, ['','','','','TOTAL DONORS', (data||[]).length, ''], {4:LEFT, 5:RIGHT}, {5:INT});
+    setCols(ws, [16, 16, 16, 28, 13, 8, 36]);
     await saveWorkbook(workbook, `donors_${appSettings.auctionYear}.xlsx`);
 
   } else if (table === 'fish') {
@@ -2492,27 +2535,54 @@ async function exportCSV(table, btn = null) {
     await saveWorkbook(workbook, `fish_${appSettings.auctionYear}.xlsx`);
 
   } else if (table === 'bidders') {
-    const { data } = await sb.from('bidders').select('*').eq('year_id', appSettings.activeYearId).order('bidder_number');
+    const [{ data }, { data: bidSales }, { data: bidMisc }] = await Promise.all([
+      sb.from('bidders').select('*').eq('year_id', appSettings.activeYearId).order('bidder_number'),
+      sb.from('sales').select('bidder_id, sale_price').eq('year_id', appSettings.activeYearId),
+      sb.from('misc_purchases').select('bidder_id, total_price').eq('year_id', appSettings.activeYearId),
+    ]);
+    const bidTotals = {};
+    (bidSales||[]).forEach(s => { bidTotals[s.bidder_id] = (bidTotals[s.bidder_id]||0) + Number(s.sale_price); });
+    (bidMisc||[]).forEach(m => { bidTotals[m.bidder_id] = (bidTotals[m.bidder_id]||0) + Number(m.total_price); });
     const ws = workbook.addWorksheet('Bidders');
-    const numCols = 7;
+    const numCols = 8;
     addTitleBlock(ws, title, subtitle, numCols);
-    addHeaders(ws, ['Bidder #', 'First Name', 'Last Name', 'Phone', 'Member', 'Status', 'Total Paid'], numCols);
-    (data||[]).forEach(b => writeRow(ws, [b.bidder_number, b.first_name, b.last_name, b.phone||'', b.is_member?'Yes':'No', b.is_paid?'Paid':'Unpaid', Number(b.total_paid||0)], {0:RIGHT, 6:RIGHT}, {6:CURR}));
+    addHeaders(ws, ['Bidder #', 'First Name', 'Last Name', 'Phone', 'Member', 'Total Due', 'Total Paid', 'Status'], numCols);
+    (data||[]).forEach(b => {
+      const due = bidTotals[b.id] || 0;
+      writeRow(ws, [b.bidder_number, b.first_name, b.last_name, b.phone||'', b.is_member?'Yes':'No', due, Number(b.total_paid||0), b.is_paid?'Paid':'Unpaid'], {0:RIGHT, 5:RIGHT, 6:RIGHT}, {5:CURR, 6:CURR});
+    });
+    const totalDue = (data||[]).reduce((s,b) => s+(bidTotals[b.id]||0), 0);
     const totalCollected = (data||[]).reduce((s,b) => s+Number(b.total_paid||0), 0);
-    writeTotalRow(ws, ['','','','','','TOTAL COLLECTED', totalCollected], {5:LEFT, 6:RIGHT}, {6:CURR});
-    setCols(ws, [10, 16, 16, 16, 9, 12, 14]);
+    writeTotalRow(ws, ['','','','','TOTALS', totalDue, totalCollected, ''], {4:LEFT, 5:RIGHT, 6:RIGHT}, {5:CURR, 6:CURR});
+    setCols(ws, [10, 16, 16, 16, 9, 14, 14, 12]);
     await saveWorkbook(workbook, `bidders_${appSettings.auctionYear}.xlsx`);
 
   } else if (table === 'sales') {
-    const { data } = await sb.from('sales').select('*, fish(description, fish_number, tanks(letter)), bidders(first_name, last_name, bidder_number)').eq('year_id', appSettings.activeYearId).order('created_at');
+    const [{ data }, { data: salesPayments }] = await Promise.all([
+      sb.from('sales').select('*, fish(description, fish_number, tanks(letter)), bidders(first_name, last_name, bidder_number)').eq('year_id', appSettings.activeYearId).order('created_at'),
+      sb.from('payments').select('bidder_id, amount').eq('year_id', appSettings.activeYearId),
+    ]);
+    // Compute per-fish paid status using FIFO allocation
+    const exportPaidFishIds = new Set();
+    const expBidderIds = [...new Set((data||[]).map(s => s.bidder_id))].filter(Boolean);
+    for (const bId of expBidderIds) {
+      const totalPaid = (salesPayments||[]).filter(p => p.bidder_id === bId).reduce((s,r) => s+Number(r.amount), 0);
+      if (totalPaid <= 0) continue;
+      const bSales = (data||[]).filter(s => s.bidder_id === bId).sort((a,b) => new Date(a.created_at)-new Date(b.created_at));
+      let covered = totalPaid;
+      for (const s of bSales) {
+        const price = Number(s.sale_price);
+        if (covered >= price - 0.01) { exportPaidFishIds.add(s.fish_id); covered -= price; } else break;
+      }
+    }
     const ws = workbook.addWorksheet('Sales');
-    const numCols = 6;
+    const numCols = 7;
     addTitleBlock(ws, title, subtitle, numCols);
-    addHeaders(ws, ['Fish ID', 'Description', 'Bidder #', 'Bidder Name', 'Sale Price', 'Date'], numCols);
-    (data||[]).forEach(s => writeRow(ws, [`${s.fish?.tanks?.letter||''}${s.fish?.fish_number||''}`, s.fish?.description||'', s.bidders?.bidder_number||'', `${s.bidders?.first_name||''} ${s.bidders?.last_name||''}`.trim(), Number(s.sale_price), s.created_at?s.created_at.split('T')[0]:''], {2:RIGHT, 4:RIGHT}, {4:CURR}));
+    addHeaders(ws, ['Fish ID', 'Description', 'Bidder #', 'Bidder Name', 'Sale Price', 'Paid', 'Date'], numCols);
+    (data||[]).forEach(s => writeRow(ws, [`${s.fish?.tanks?.letter||''}${s.fish?.fish_number||''}`, s.fish?.description||'', s.bidders?.bidder_number||'', `${s.bidders?.first_name||''} ${s.bidders?.last_name||''}`.trim(), Number(s.sale_price), exportPaidFishIds.has(s.fish_id)?'Paid':'Unpaid', s.created_at?s.created_at.split('T')[0]:''], {2:RIGHT, 4:RIGHT}, {4:CURR}));
     const grandTotal = (data||[]).reduce((s,r) => s+Number(r.sale_price), 0);
-    writeTotalRow(ws, ['','','','TOTAL AUCTION SALES', grandTotal, ''], {3:LEFT, 4:RIGHT}, {4:CURR});
-    setCols(ws, [10, 32, 10, 22, 13, 14]);
+    writeTotalRow(ws, ['','','','TOTAL AUCTION SALES', grandTotal, '', ''], {3:LEFT, 4:RIGHT}, {4:CURR});
+    setCols(ws, [10, 32, 10, 22, 13, 10, 14]);
     await saveWorkbook(workbook, `sales_${appSettings.auctionYear}.xlsx`);
 
   } else if (table === 'misc_purchases') {
