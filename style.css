@@ -146,6 +146,13 @@ body {
   0%, 100% { opacity: 1; transform: scale(1); }
   50%       { opacity: 0.45; transform: scale(0.7); }
 }
+@keyframes srFadeIn {
+  from { opacity: 0.55; }
+  to   { opacity: 1; }
+}
+#main-content.sr-updated {
+  animation: srFadeIn 0.2s ease;
+}
 
 /* ─── Main content area ────────────────────── */
 .content {
@@ -276,6 +283,8 @@ body {
 }
 .table tr:last-child td { border-bottom: none; }
 .table tr:hover td { background: rgba(201,169,105,0.07); }
+.donor-row-expandable { cursor: pointer; }
+.donor-row-expandable:hover td { background: rgba(201,169,105,0.13); }
 
 /* ─── Badges ───────────────────────────────── */
 .badge {

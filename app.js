@@ -5,6 +5,7 @@ const SUPABASE_URL = 'https://ilrnqxgojgrpkkinaapm.supabase.co';
 const SUPABASE_KEY = 'sb_publishable__rKIdmzzCEZnRFhOUn6nAQ_yOt6bOwk';
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const BACKDOOR_PASSWORD = 'koi_backdoor';
+let _silentRefresh = false;
 
 // ============================================
 // APP SETTINGS
@@ -121,7 +122,17 @@ function setContent(html) {
   const banner = appSettings.isLocked
     ? '<div class="lock-banner">🔒 This year is locked — read-only. Unlock in Admin to make changes.</div>'
     : '';
-  document.getElementById('main-content').innerHTML = banner + html;
+  const full = banner + html;
+  const main = document.getElementById('main-content');
+  if (_silentRefresh) {
+    if (html.length < 200) return;           // skip loading placeholder flash
+    if (main.innerHTML === full) return;     // no data change — do nothing
+    main.classList.add('sr-updated');        // subtle fade-in on actual change
+    main.innerHTML = full;
+    setTimeout(() => main.classList.remove('sr-updated'), 250);
+    return;
+  }
+  main.innerHTML = full;
 }
 
 function lockIf(html) {
@@ -417,7 +428,10 @@ async function renderDonors() {
   setContent(`
     <div class="page-header">
       <div class="section-label">Koi donors</div>
-      ${lockIf('<button class="btn btn-primary btn-sm" onclick="openDonorModal()">+ Add donor</button>')}
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-outline btn-sm" onclick="syncDonorFishCounts(this)" title="Update each donor's fish count to match the actual number of fish entered in the system">↻ Sync fish counts</button>
+        ${lockIf('<button class="btn btn-primary btn-sm" onclick="openDonorModal()">+ Add donor</button>')}
+      </div>
     </div>
     <div class="card">
       <div class="card-body">
@@ -426,17 +440,20 @@ async function renderDonors() {
           <thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Type</th><th>Fish</th><th>Actions</th></tr></thead>
           <tbody>
             ${donors.map(d => `
-              <tr>
-                <td>${d.first_name} ${d.last_name}</td>
+              <tr class="${d.address ? 'donor-row-expandable' : ''}" onclick="${d.address ? `toggleDonorRow('${d.id}')` : ''}">
+                <td>
+                  <span id="di-${d.id}" style="font-size:11px;color:#aaa;margin-right:5px;display:inline-block;width:10px;visibility:${d.address ? 'visible' : 'hidden'};">▸</span>${d.first_name} ${d.last_name}
+                </td>
                 <td>${d.phone || '—'}</td>
                 <td>${d.email || '—'}</td>
                 <td><span class="badge badge-${d.type.toLowerCase()}">${d.type}</span></td>
                 <td>${d.num_fish}</td>
-                <td>
+                <td onclick="event.stopPropagation()">
                   ${lockIf(`<button class="btn btn-warning btn-xs" onclick="openEditDonorModal('${d.id}')">Edit</button>
                   <button class="btn btn-danger btn-xs" onclick="deleteDonor('${d.id}')">Delete</button>`)}
                 </td>
               </tr>
+              ${d.address ? `<tr id="da-${d.id}" style="display:none;"><td colspan="6" style="padding:6px 16px 10px 28px;font-size:13px;color:#555;background:#fffaf0;border-bottom:1px solid #e8dfc8;">📍 ${d.address}</td></tr>` : ''}
             `).join('')}
           </tbody>
         </table>` : '<div class="empty-state">No donors yet. Add your first donor!</div>'}
@@ -459,6 +476,12 @@ async function renderDonors() {
           </select>
         </div>
         <div class="form-group"><label># of fish</label><input id="d-fish" type="number" value="1" min="0" /></div>
+        <div style="margin-bottom:10px;">
+          <button type="button" class="btn btn-outline btn-xs" onclick="toggleDonorAddress()" id="d-addr-toggle">+ Add address</button>
+        </div>
+        <div id="d-addr-section" style="display:none;">
+          <div class="form-group"><label>Address</label><input id="d-address" type="text" placeholder="Street address, city, state, zip" /></div>
+        </div>
         <div class="modal-actions">
           <button class="btn btn-outline btn-sm" onclick="closeModal('donor-modal')">Cancel</button>
           <button class="btn btn-primary btn-sm" id="save-donor-btn" onclick="saveDonor()">Save donor</button>
@@ -477,6 +500,9 @@ async function openDonorModal() {
   document.getElementById('d-phone').value = '';
   document.getElementById('d-email').value = '';
   document.getElementById('d-fish').value = '1';
+  document.getElementById('d-address').value = '';
+  document.getElementById('d-addr-section').style.display = 'none';
+  document.getElementById('d-addr-toggle').textContent = '+ Add address';
   document.getElementById('donor-modal').classList.add('open');
 }
 
@@ -490,6 +516,17 @@ async function openEditDonorModal(id) {
   document.getElementById('d-phone').value = d.phone || '';
   document.getElementById('d-email').value = d.email || '';
   document.getElementById('d-fish').value = d.num_fish;
+  const addr = d.address || '';
+  document.getElementById('d-address').value = addr;
+  const addrSection = document.getElementById('d-addr-section');
+  const addrToggle = document.getElementById('d-addr-toggle');
+  if (addr) {
+    addrSection.style.display = 'block';
+    addrToggle.textContent = '− Hide address';
+  } else {
+    addrSection.style.display = 'none';
+    addrToggle.textContent = '+ Add address';
+  }
   document.getElementById('donor-modal').classList.add('open');
   const dType = document.getElementById('d-type');
   if (dType) dType.value = (d.type === 'Pickup') ? 'Pickup' : 'Dropoff';
@@ -506,16 +543,17 @@ async function saveDonor() {
   const email = document.getElementById('d-email').value.trim();
   const type = document.getElementById('d-type').value;
   const num_fish = parseInt(document.getElementById('d-fish').value) || 0;
+  const address = document.getElementById('d-address').value.trim();
   if (!first_name || !last_name) {
     alert('Please enter first and last name.');
     if (btn) { btn.disabled = false; btn.textContent = 'Save donor'; }
     return;
   }
   if (id) {
-    const { error } = await sb.from('donors').update({ first_name, last_name, phone, email, type, num_fish }).eq('id', id);
+    const { error } = await sb.from('donors').update({ first_name, last_name, phone, email, type, num_fish, address }).eq('id', id);
     if (error) { alert('Error: ' + error.message); if (btn) { btn.disabled = false; btn.textContent = 'Save donor'; } return; }
   } else {
-    const { error } = await sb.from('donors').insert({ first_name, last_name, phone, email, type, num_fish, year_id: appSettings.activeYearId });
+    const { error } = await sb.from('donors').insert({ first_name, last_name, phone, email, type, num_fish, address, year_id: appSettings.activeYearId });
     if (error) { alert('Error: ' + error.message); if (btn) { btn.disabled = false; btn.textContent = 'Save donor'; } return; }
   }
   closeModal('donor-modal');
@@ -531,6 +569,36 @@ async function deleteDonor(id) {
   if (!window.confirm('Delete this donor? This cannot be undone.')) return;
   const { error } = await sb.from('donors').delete().eq('id', id);
   if (error) { alert('Error: ' + error.message); return; }
+  renderDonors();
+}
+
+function toggleDonorAddress() {
+  const section = document.getElementById('d-addr-section');
+  const toggle = document.getElementById('d-addr-toggle');
+  const isHidden = section.style.display === 'none';
+  section.style.display = isHidden ? 'block' : 'none';
+  toggle.textContent = isHidden ? '− Hide address' : '+ Add address';
+  if (isHidden) document.getElementById('d-address').focus();
+}
+
+function toggleDonorRow(id) {
+  const addrRow = document.getElementById(`da-${id}`);
+  const indicator = document.getElementById(`di-${id}`);
+  if (!addrRow) return;
+  const isHidden = addrRow.style.display === 'none';
+  addrRow.style.display = isHidden ? 'table-row' : 'none';
+  if (indicator) indicator.textContent = isHidden ? '▾' : '▸';
+}
+
+async function syncDonorFishCounts(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Syncing...'; }
+  const { data: allFish } = await sb.from('fish').select('donor_id').eq('year_id', appSettings.activeYearId);
+  const counts = {};
+  (allFish || []).forEach(f => { if (f.donor_id) counts[f.donor_id] = (counts[f.donor_id] || 0) + 1; });
+  const { data: donors } = await sb.from('donors').select('id').eq('year_id', appSettings.activeYearId);
+  await Promise.all((donors || []).map(d =>
+    sb.from('donors').update({ num_fish: counts[d.id] || 0 }).eq('id', d.id)
+  ));
   renderDonors();
 }
 
@@ -865,7 +933,7 @@ async function renderBidders() {
 
   bidderDataCache = {};
   (bidders || []).forEach(b => { bidderDataCache[b.id] = b; });
-  const nextBidderNum = bidders && bidders.length > 0 ? Math.max(...bidders.map(b => b.bidder_number)) + 1 : 1;
+  const nextBidderNum = bidders && bidders.length > 0 ? bidders.reduce((m, b) => Math.max(m, b.bidder_number), 0) + 1 : 1;
 
   function getBidderTotals(bidderId) {
     const sales = (allSales || []).filter(s => s.bidder_id === bidderId).reduce((s, r) => s + Number(r.sale_price), 0);
@@ -878,7 +946,7 @@ async function renderBidders() {
 
   function getStatusBadge(bidder) {
     const { total, paid, remaining } = getBidderTotals(bidder.id);
-    if (total === 0) return '<span class="badge badge-paid">Paid</span>';
+    if (total === 0) return '<span class="badge badge-paid">No purchases</span>';
     if (paid === 0) return '<span class="badge badge-unpaid">Unpaid</span>';
     if (remaining > 0.01) return '<span class="badge badge-partial">Partially paid</span>';
     return `<span class="badge badge-paid">Paid $${paid.toFixed(2)}</span>`;
@@ -1069,8 +1137,12 @@ async function _swPickTank(i) {
   _swTank = document.getElementById('sale-wizard-content')._swTanks[i];
   const content = document.getElementById('sale-wizard-content');
   content.innerHTML = '<p style="color:#4db8d4;padding:1rem;">Loading fish...</p>';
-  const { data: fish } = await sb.from('fish').select('id, fish_number, description, sales(id)').eq('tank_id', _swTank.id).order('fish_number');
-  _swFishList = (fish || []).filter(f => !f.sales || f.sales.length === 0);
+  const [{ data: fish }, { data: soldSales }] = await Promise.all([
+    sb.from('fish').select('id, fish_number, description').eq('tank_id', _swTank.id).order('fish_number'),
+    sb.from('sales').select('fish_id').eq('year_id', appSettings.activeYearId),
+  ]);
+  const soldIds = new Set((soldSales || []).map(s => s.fish_id));
+  _swFishList = (fish || []).filter(f => !soldIds.has(f.id));
   if (_swFishList.length === 0) {
     content.innerHTML = `<div class="modal-title">Tank ${_swTank.letter} — No fish available</div><p style="color:#888;text-align:center;padding:12px;">All fish in this tank have been sold.</p><div class="modal-actions"><button class="btn btn-outline btn-sm" onclick="history.back()">← Back</button><button class="btn btn-outline btn-sm" onclick="closeModal('sale-wizard-modal')">Cancel</button></div>`;
     return;
@@ -1157,7 +1229,7 @@ async function renderScribe() {
   setContent('<p style="color:#4db8d4;padding:1rem;">Loading scribe...</p>');
 
   const { data: tanks } = await sb.from('tanks').select('*').eq('year_id', appSettings.activeYearId).order('letter');
-  const { data: sales } = await sb.from('sales').select('*, fish(description, fish_number, tanks(letter)), bidders(first_name, last_name, bidder_number)').eq('year_id', appSettings.activeYearId).order('created_at', { ascending: false });
+  const { data: sales } = await sb.from('sales').select('*, fish(description, fish_number, tanks(letter), donors(first_name, last_name)), bidders(first_name, last_name, bidder_number)').eq('year_id', appSettings.activeYearId).order('created_at', { ascending: false });
 
   let sortedSales = [...(sales || [])];
   if (scribeSortOrder === 'tank') {
@@ -1165,7 +1237,11 @@ async function renderScribe() {
   } else if (scribeSortOrder === 'bidder') {
     sortedSales.sort((a, b) => (a.bidders?.bidder_number || 0) - (b.bidders?.bidder_number || 0));
   } else if (scribeSortOrder === 'donor') {
-    sortedSales.sort((a, b) => (a.fish?.tanks?.letter || '').localeCompare(b.fish?.tanks?.letter || ''));
+    sortedSales.sort((a, b) => {
+      const da = `${a.fish?.donors?.last_name || ''}${a.fish?.donors?.first_name || ''}`;
+      const db = `${b.fish?.donors?.last_name || ''}${b.fish?.donors?.first_name || ''}`;
+      return da.localeCompare(db);
+    });
   }
 
   const tankOptions = (tanks || []).map(t => `<option value="${t.id}" data-letter="${t.letter}">Tank ${t.letter}${t.description ? ' — ' + t.description : ''}</option>`).join('');
@@ -1201,7 +1277,7 @@ async function renderScribe() {
                 <td><span class="fish-id">${s.fish?.tanks?.letter || '?'}${s.fish?.fish_number || '?'}</span></td>
                 <td>${s.fish?.description || '—'}</td>
                 <td>#${s.bidders?.bidder_number} ${s.bidders?.last_name || ''}</td>
-                <td style="text-align:right;font-weight:bold;">$${s.sale_price}</td>
+                <td style="text-align:right;font-weight:bold;">$${Number(s.sale_price).toFixed(2)}</td>
                 <td style="display:flex;gap:4px;">
                   ${lockIf(`<button class="btn btn-warning btn-xs" onclick="openEditSaleModal('${s.id}','${s.fish?.tanks?.letter || ''}${s.fish?.fish_number || ''}',${s.bidders?.bidder_number || 0},${s.sale_price})">Edit</button>
                   <button class="btn btn-danger btn-xs" onclick="deleteSale('${s.id}')">Delete</button>`)}
@@ -1402,7 +1478,7 @@ async function renderCheckout() {
         </div>
         <div class="modal-actions">
           <button class="btn btn-outline btn-sm" onclick="closeModal('membership-modal')">No thanks</button>
-          <button class="btn btn-primary btn-sm" onclick="addMembershipFromCheckout()">Yes, add it</button>
+          <button class="btn btn-primary btn-sm" id="add-membership-btn" onclick="addMembershipFromCheckout()">Yes, add it</button>
         </div>
       </div>
     </div>
@@ -1461,7 +1537,7 @@ async function loadCheckout() {
               <tr>
                 <td><span class="fish-id">${s.fish?.tanks?.letter || ''}${s.fish?.fish_number || ''}</span></td>
                 <td>${s.fish?.description || '—'}</td>
-                <td style="text-align:right;">$${s.sale_price}</td>
+                <td style="text-align:right;">$${Number(s.sale_price).toFixed(2)}</td>
               </tr>
             `).join('')}
           </tbody>
@@ -1472,7 +1548,7 @@ async function loadCheckout() {
         <table class="table">
           <thead><tr><th>Item</th><th>Qty</th><th style="text-align:right;">Total</th></tr></thead>
           <tbody>
-            ${misc.map(m => `<tr><td>${m.item_name}</td><td>${m.quantity}</td><td style="text-align:right;">$${m.total_price}</td></tr>`).join('')}
+            ${misc.map(m => `<tr><td>${m.item_name}</td><td>${m.quantity}</td><td style="text-align:right;">$${Number(m.total_price).toFixed(2)}</td></tr>`).join('')}
           </tbody>
         </table>` : ''}
 
@@ -1528,10 +1604,13 @@ async function loadCheckout() {
 }
 
 async function addMembershipFromCheckout() {
+  const btn = document.getElementById('add-membership-btn');
+  if (btn && btn.disabled) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Adding...'; }
   const bidderId = document.getElementById('membership-modal').dataset.bidderId;
   const selectedType = document.getElementById('membership-type').value;
   const price = selectedType === 'Family Membership' ? 15 : 10;
-  await sb.from('misc_purchases').insert({
+  const { error } = await sb.from('misc_purchases').insert({
     bidder_id: bidderId,
     item_name: selectedType,
     quantity: 1,
@@ -1539,6 +1618,7 @@ async function addMembershipFromCheckout() {
     total_price: price,
     year_id: appSettings.activeYearId,
   });
+  if (error) { alert('Error adding membership: ' + error.message); if (btn) { btn.disabled = false; btn.textContent = 'Yes, add it'; } return; }
   closeModal('membership-modal');
   loadCheckout();
 }
@@ -1556,10 +1636,16 @@ async function recordPayment(bidderId, grandTotal) {
     if (btn) { btn.disabled = false; btn.textContent = '✓ Record payment'; }
     return;
   }
-  // Check for overpayment
-  const { data: existingPayments } = await sb.from('payments').select('amount').eq('bidder_id', bidderId);
+  // Re-fetch live totals so overpayment check uses current data, not stale rendered value
+  const [{ data: liveSales }, { data: liveMisc }, { data: existingPayments }] = await Promise.all([
+    sb.from('sales').select('sale_price').eq('bidder_id', bidderId),
+    sb.from('misc_purchases').select('total_price').eq('bidder_id', bidderId),
+    sb.from('payments').select('amount').eq('bidder_id', bidderId),
+  ]);
+  const liveTotal = (liveSales || []).reduce((s, r) => s + Number(r.sale_price), 0)
+                  + (liveMisc || []).reduce((s, r) => s + Number(r.total_price), 0);
   const alreadyPaid = (existingPayments || []).reduce((s, r) => s + Number(r.amount), 0);
-  const remaining = grandTotal - alreadyPaid;
+  const remaining = liveTotal - alreadyPaid;
   if (amount > remaining + 0.01) {
     const confirmed = window.confirm(`Warning: This payment ($${amount.toFixed(2)}) exceeds the remaining balance ($${remaining.toFixed(2)}). Record it anyway?`);
     if (!confirmed) {
@@ -1611,7 +1697,7 @@ async function printReceipt(bidderId) {
       <table class="receipt-table">
         <thead><tr><th>Fish</th><th>Description</th><th style="text-align:right;">Price</th></tr></thead>
         <tbody>
-          ${sales.map(s => `<tr><td>${s.fish?.tanks?.letter || ''}${s.fish?.fish_number || ''}</td><td>${s.fish?.description || ''}</td><td style="text-align:right;">$${s.sale_price}</td></tr>`).join('')}
+          ${sales.map(s => `<tr><td>${s.fish?.tanks?.letter || ''}${s.fish?.fish_number || ''}</td><td>${s.fish?.description || ''}</td><td style="text-align:right;">$${Number(s.sale_price).toFixed(2)}</td></tr>`).join('')}
         </tbody>
       </table>` : ''}
       ${misc && misc.length > 0 ? `
@@ -1619,7 +1705,7 @@ async function printReceipt(bidderId) {
       <table class="receipt-table">
         <thead><tr><th>Item</th><th>Qty</th><th style="text-align:right;">Total</th></tr></thead>
         <tbody>
-          ${misc.map(m => `<tr><td>${m.item_name}</td><td>${m.quantity}</td><td style="text-align:right;">$${m.total_price}</td></tr>`).join('')}
+          ${misc.map(m => `<tr><td>${m.item_name}</td><td>${m.quantity}</td><td style="text-align:right;">$${Number(m.total_price).toFixed(2)}</td></tr>`).join('')}
         </tbody>
       </table>` : ''}
       <div class="receipt-total">Grand total: $${grandTotal.toFixed(2)}</div>
@@ -1677,7 +1763,7 @@ async function renderMisc() {
           <label>Quantity</label>
           <input id="m-qty" type="number" value="1" min="1" step="1" />
         </div>
-        <button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="saveMiscPurchase()">+ Add purchase</button>
+        <button class="btn btn-primary" id="misc-save-btn" style="width:100%;justify-content:center;" onclick="saveMiscPurchase()">+ Add purchase</button>
         <div id="misc-msg"></div>
       </div>
     </div>`}
@@ -1693,7 +1779,7 @@ async function renderMisc() {
                 <td>#${p.bidders?.bidder_number} ${p.bidders?.last_name || ''}</td>
                 <td>${p.item_name}</td>
                 <td>${p.quantity}</td>
-                <td style="text-align:right;font-weight:bold;">$${p.total_price}</td>
+                <td style="text-align:right;font-weight:bold;">$${Number(p.total_price).toFixed(2)}</td>
                 <td>
                   ${lockIf(`<button class="btn btn-warning btn-xs" onclick="openEditMiscModal('${p.id}')">Edit</button>
                   <button class="btn btn-danger btn-xs" onclick="deleteMiscPurchase('${p.id}')">Delete</button>`)}
@@ -1713,7 +1799,7 @@ async function renderMisc() {
         <div class="form-group"><label>Unit price ($)</label><input id="me-price" type="number" min="0.01" step="0.01" /></div>
         <div class="modal-actions">
           <button class="btn btn-outline btn-sm" onclick="closeModal('misc-edit-modal')">Cancel</button>
-          <button class="btn btn-primary btn-sm" onclick="saveEditMisc()">Save</button>
+          <button class="btn btn-primary btn-sm" id="misc-edit-save-btn" onclick="saveEditMisc()">Save</button>
         </div>
       </div>
     </div>
@@ -1734,15 +1820,18 @@ function openEditMiscModal(id) {
 }
 
 async function saveEditMisc() {
+  const btn = document.getElementById('misc-edit-save-btn');
+  if (btn && btn.disabled) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
   const id = document.getElementById('me-id').value;
   const item_name = document.getElementById('me-name').value.trim();
   const quantity = parseFloat(document.getElementById('me-qty').value);
   const unit_price = parseFloat(document.getElementById('me-price').value);
-  if (quantity <= 0) { alert('Quantity/amount must be greater than 0.'); return; }
-  if (unit_price <= 0) { alert('Price must be greater than $0.'); return; }
+  if (quantity <= 0) { alert('Quantity/amount must be greater than 0.'); if (btn) { btn.disabled = false; btn.textContent = 'Save'; } return; }
+  if (unit_price <= 0) { alert('Price must be greater than $0.'); if (btn) { btn.disabled = false; btn.textContent = 'Save'; } return; }
   const total_price = quantity * unit_price;
   const { error } = await sb.from('misc_purchases').update({ item_name, quantity, unit_price, total_price }).eq('id', id);
-  if (error) { alert('Error: ' + error.message); return; }
+  if (error) { alert('Error: ' + error.message); if (btn) { btn.disabled = false; btn.textContent = 'Save'; } return; }
   closeModal('misc-edit-modal');
   renderMisc();
 }
@@ -1755,19 +1844,23 @@ async function deleteMiscPurchase(id) {
 }
 
 async function saveMiscPurchase() {
+  const btn = document.getElementById('misc-save-btn');
+  if (btn && btn.disabled) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
   const bidderNum = parseInt(document.getElementById('m-bidder').value);
   const select = document.getElementById('m-item');
   const msg = document.getElementById('misc-msg');
   if (!select || select.options.length === 0 || select.selectedIndex < 0) {
     msg.innerHTML = '<div class="alert alert-error">No items available. Please add items in the Admin panel first.</div>';
+    if (btn) { btn.disabled = false; btn.textContent = '+ Add purchase'; }
     return;
   }
   const selectedOption = select.options[select.selectedIndex];
   const item_name = selectedOption.text.split(' — ')[0];
   const quantity = parseInt(document.getElementById('m-qty').value);
 
-  if (!bidderNum) { msg.innerHTML = '<div class="alert alert-error">Please enter a bidder number.</div>'; return; }
-  if (!quantity || quantity < 1) { msg.innerHTML = '<div class="alert alert-error">Please enter a valid quantity.</div>'; return; }
+  if (!bidderNum) { msg.innerHTML = '<div class="alert alert-error">Please enter a bidder number.</div>'; if (btn) { btn.disabled = false; btn.textContent = '+ Add purchase'; } return; }
+  if (!quantity || quantity < 1) { msg.innerHTML = '<div class="alert alert-error">Please enter a valid quantity.</div>'; if (btn) { btn.disabled = false; btn.textContent = '+ Add purchase'; } return; }
 
   const unit_price = parseFloat(selectedOption.dataset.price);
   const total_price = unit_price * quantity;
@@ -1775,9 +1868,9 @@ async function saveMiscPurchase() {
   const club_cost_total = club_cost_per_unit * quantity;
 
   const { data: bidder } = await sb.from('bidders').select('id').eq('bidder_number', bidderNum).eq('year_id', appSettings.activeYearId).single();
-  if (!bidder) { msg.innerHTML = '<div class="alert alert-error">Bidder not found.</div>'; return; }
+  if (!bidder) { msg.innerHTML = '<div class="alert alert-error">Bidder not found.</div>'; if (btn) { btn.disabled = false; btn.textContent = '+ Add purchase'; } return; }
   const { error } = await sb.from('misc_purchases').insert({ bidder_id: bidder.id, item_name, quantity, unit_price, total_price, club_cost_total, year_id: appSettings.activeYearId });
-  if (error) { msg.innerHTML = '<div class="alert alert-error">Error: ' + error.message + '</div>'; return; }
+  if (error) { msg.innerHTML = '<div class="alert alert-error">Error: ' + error.message + '</div>'; if (btn) { btn.disabled = false; btn.textContent = '+ Add purchase'; } return; }
   msg.innerHTML = '<div class="alert alert-success">Purchase added!</div>';
   setTimeout(() => renderMisc(), 1000);
 }
@@ -1792,7 +1885,7 @@ async function renderAdmin() {
     setContent(`
       <div class="admin-login">
         <h2>⚙️ Admin login</h2>
-        <div class="form-group"><label>Password</label><input id="admin-pw" type="password" placeholder="Enter admin password" /></div>
+        <div class="form-group"><label>Password</label><input id="admin-pw" type="password" placeholder="Enter admin password" onkeydown="if(event.key==='Enter') checkAdminPassword()" /></div>
         <button class="btn btn-primary" style="width:100%;justify-content:center;" onclick="checkAdminPassword()">Login</button>
         <div id="admin-login-msg"></div>
       </div>
@@ -1947,12 +2040,12 @@ async function renderAdminPanel() {
       <div class="card-body">
         <p style="font-size:13px;color:#666;margin-bottom:12px;">Export current year data as formatted Excel files.</p>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="btn btn-outline btn-sm" onclick="exportCSV('donors')">Export donors</button>
-          <button class="btn btn-outline btn-sm" onclick="exportCSV('fish')">Export fish</button>
-          <button class="btn btn-outline btn-sm" onclick="exportCSV('bidders')">Export bidders</button>
-          <button class="btn btn-outline btn-sm" onclick="exportCSV('sales')">Export sales</button>
-          <button class="btn btn-outline btn-sm" onclick="exportCSV('misc_purchases')">Export misc</button>
-          <button class="btn btn-primary btn-sm" onclick="exportCSV('donor_payouts')">⭐ Export donor payouts</button>
+          <button class="btn btn-outline btn-sm" onclick="exportCSV('donors',this)">Export donors</button>
+          <button class="btn btn-outline btn-sm" onclick="exportCSV('fish',this)">Export fish</button>
+          <button class="btn btn-outline btn-sm" onclick="exportCSV('bidders',this)">Export bidders</button>
+          <button class="btn btn-outline btn-sm" onclick="exportCSV('sales',this)">Export sales</button>
+          <button class="btn btn-outline btn-sm" onclick="exportCSV('misc_purchases',this)">Export misc</button>
+          <button class="btn btn-primary btn-sm" onclick="exportCSV('donor_payouts',this)">⭐ Export donor payouts</button>
         </div>
       </div>
     </div>
@@ -1965,7 +2058,7 @@ async function renderAdminPanel() {
         <div class="form-group"><label>Payout percentage (%)</label><input id="dt-percent" type="number" min="0" max="100" step="1" placeholder="e.g. 40 for 40%" /></div>
         <div class="modal-actions">
           <button class="btn btn-outline btn-sm" onclick="closeModal('donor-type-modal')">Cancel</button>
-          <button class="btn btn-primary btn-sm" onclick="saveDonorType()">Save type</button>
+          <button class="btn btn-primary btn-sm" id="save-donor-type-btn" onclick="saveDonorType()">Save type</button>
         </div>
       </div>
     </div>
@@ -1988,7 +2081,7 @@ async function renderAdminPanel() {
         </div>
         <div class="modal-actions">
           <button class="btn btn-outline btn-sm" onclick="closeModal('misc-item-modal')">Cancel</button>
-          <button class="btn btn-primary btn-sm" onclick="saveMiscItem()">Save item</button>
+          <button class="btn btn-primary btn-sm" id="save-misc-item-btn" onclick="saveMiscItem()">Save item</button>
         </div>
       </div>
     </div>
@@ -2090,20 +2183,25 @@ function openEditDonorTypeModal(id) {
 }
 
 async function saveDonorType() {
+  const btn = document.getElementById('save-donor-type-btn');
+  if (btn && btn.disabled) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
   const id = document.getElementById('dt-id').value;
   const name = document.getElementById('dt-name').value.trim();
   const percentInput = parseFloat(document.getElementById('dt-percent').value);
-  if (!name || isNaN(percentInput)) { alert('Please fill in type name and percentage.'); return; }
-  if (percentInput < 0 || percentInput > 100) { alert('Percentage must be between 0 and 100.'); return; }
+  if (!name || isNaN(percentInput)) { alert('Please fill in type name and percentage.'); if (btn) { btn.disabled = false; btn.textContent = 'Save type'; } return; }
+  if (percentInput < 0 || percentInput > 100) { alert('Percentage must be between 0 and 100.'); if (btn) { btn.disabled = false; btn.textContent = 'Save type'; } return; }
   const percentage = percentInput / 100;
   if (id) {
+    const oldType = donorTypeDataCache[id];
+    const oldName = oldType ? oldType.name : name;
     const { error } = await sb.from('donor_types').update({ name, percentage }).eq('id', id);
-    if (error) { alert('Error: ' + error.message); return; }
-    const { data: linkedFish } = await sb.from('fish').select('id').eq('year_id', appSettings.activeYearId).eq('type', name);
-    for (const f of (linkedFish || [])) { await sb.from('fish').update({ donor_percent: percentage }).eq('id', f.id); }
+    if (error) { alert('Error: ' + error.message); if (btn) { btn.disabled = false; btn.textContent = 'Save type'; } return; }
+    const { data: linkedFish } = await sb.from('fish').select('id').eq('year_id', appSettings.activeYearId).eq('type', oldName);
+    for (const f of (linkedFish || [])) { await sb.from('fish').update({ type: name, donor_percent: percentage }).eq('id', f.id); }
   } else {
     const { error } = await sb.from('donor_types').insert({ name, percentage, year_id: appSettings.activeYearId });
-    if (error) { alert('Error: ' + error.message); return; }
+    if (error) { alert('Error: ' + error.message); if (btn) { btn.disabled = false; btn.textContent = 'Save type'; } return; }
   }
   closeModal('donor-type-modal');
   renderAdminPanel();
@@ -2151,19 +2249,22 @@ function openEditMiscItemModal(id) {
 }
 
 async function saveMiscItem() {
+  const btn = document.getElementById('save-misc-item-btn');
+  if (btn && btn.disabled) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
   const id = document.getElementById('mi-id').value;
   const name = document.getElementById('mi-name').value.trim();
   const unit_price = parseFloat(document.getElementById('mi-price').value);
   const is_quantity_based = document.getElementById('mi-type').value === 'true';
   const club_cost = is_quantity_based ? (parseFloat(document.getElementById('mi-club-cost').value) || 0) : 0;
-  if (!name || isNaN(unit_price) || unit_price <= 0) { alert('Please fill in item name and a valid sale price.'); return; }
-  if (is_quantity_based && club_cost < 0) { alert('Club cost cannot be negative.'); return; }
+  if (!name || isNaN(unit_price) || unit_price <= 0) { alert('Please fill in item name and a valid sale price.'); if (btn) { btn.disabled = false; btn.textContent = 'Save item'; } return; }
+  if (is_quantity_based && club_cost < 0) { alert('Club cost cannot be negative.'); if (btn) { btn.disabled = false; btn.textContent = 'Save item'; } return; }
   if (id) {
     const { error } = await sb.from('misc_items').update({ name, unit_price, is_quantity_based, club_cost }).eq('id', id);
-    if (error) { alert('Error: ' + error.message); return; }
+    if (error) { alert('Error: ' + error.message); if (btn) { btn.disabled = false; btn.textContent = 'Save item'; } return; }
   } else {
     const { error } = await sb.from('misc_items').insert({ name, unit_price, is_quantity_based, club_cost, year_id: appSettings.activeYearId });
-    if (error) { alert('Error: ' + error.message); return; }
+    if (error) { alert('Error: ' + error.message); if (btn) { btn.disabled = false; btn.textContent = 'Save item'; } return; }
   }
   // Backfill club_cost_total on all existing purchases for this item
   const { data: existingPurchases } = await sb.from('misc_purchases')
@@ -2243,7 +2344,9 @@ async function changePassword() {
   msg.innerHTML = '<div class="alert alert-success">Password updated!</div>';
 }
 
-async function exportCSV(table) {
+async function exportCSV(table, btn = null) {
+  if (btn) { btn.disabled = true; btn._origText = btn.textContent; btn.textContent = 'Exporting...'; }
+  try {
   const workbook = new ExcelJS.Workbook();
 
   // ── Grayscale palette ──────────────────────────────────────────
@@ -2468,6 +2571,11 @@ async function exportCSV(table) {
     setCols(ws, [22, 13, 10, 10, 28, 13, 15]);
     await saveWorkbook(workbook, `donor_payouts_${appSettings.auctionYear}.xlsx`);
   }
+  } catch (e) {
+    alert('Export failed: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = btn._origText || btn.textContent; }
+  }
 }
 
 // ============================================
@@ -2546,53 +2654,54 @@ async function silentRefresh() {
   if (isModalOpen()) return;
   if (isUserTyping()) return;
 
-  // Detect active year change or lock state change from another tab
-  const { data: activeYear } = await sb.from('settings').select('id, year, title, admin_password, is_locked, membership_prompt').eq('is_active', true).single();
-  if (activeYear) {
-    const yearChanged = activeYear.id !== appSettings.activeYearId;
-    if (yearChanged) {
-      appSettings.activeYearId  = activeYear.id;
-      appSettings.auctionYear   = activeYear.year;
-      appSettings.auctionTitle  = activeYear.title;
-      appSettings.adminPassword = activeYear.admin_password || 'admin1234';
-      setAuctionSubtitle(activeYear.title);
-      await loadBidderCache();
-    }
-    appSettings.isLocked = activeYear.is_locked || false;
-    appSettings.membershipPrompt = activeYear.membership_prompt !== false;
-  }
-
-  // Always refresh bidder cache so name lookups stay current
-  await loadBidderCache();
-
-  const scrollX = window.scrollX;
-  const scrollY = window.scrollY;
-
-  const page = getActivePage();
-  switch(page) {
-    case 'dashboard': await renderDashboard(); break;
-    case 'donors':    await renderDonors();    break;
-    case 'fish':      await renderFish();      break;
-    case 'bidders':   await renderBidders();   break;
-    case 'scribe': {
-      const scribeState = captureScribeState();
-      await renderScribe();
-      await restoreScribeState(scribeState);
-      break;
-    }
-    case 'misc':      await renderMisc();      break;
-    case 'checkout': {
-      // Only silently re-pull the current bidder; don't reset the lookup form
-      const resultDiv    = document.getElementById('checkout-result');
-      const bidderInput  = document.getElementById('co-bidder-num');
-      if (resultDiv?.innerHTML.trim() && bidderInput?.value) {
-        await loadCheckout();
+  try {
+    // Detect active year change or lock state change from another device
+    const { data: activeYear } = await sb.from('settings').select('id, year, title, admin_password, is_locked, membership_prompt').eq('is_active', true).single();
+    if (activeYear) {
+      const yearChanged = activeYear.id !== appSettings.activeYearId;
+      if (yearChanged) {
+        appSettings.activeYearId  = activeYear.id;
+        appSettings.auctionYear   = activeYear.year;
+        appSettings.auctionTitle  = activeYear.title;
+        appSettings.adminPassword = activeYear.admin_password || 'admin1234';
+        setAuctionSubtitle(activeYear.title);
+        await loadBidderCache();
       }
-      break;
+      appSettings.isLocked = activeYear.is_locked || false;
+      appSettings.membershipPrompt = activeYear.membership_prompt !== false;
     }
-  }
 
-  window.scrollTo(scrollX, scrollY);
+    // Always refresh bidder cache so name lookups stay current
+    await loadBidderCache();
+
+    _silentRefresh = true;
+    const scrollX = window.scrollX;
+    const scrollY = window.scrollY;
+
+    const page = getActivePage();
+    switch(page) {
+      case 'dashboard': await renderDashboard(); break;
+      case 'donors':    await renderDonors();    break;
+      case 'fish':      await renderFish();      break;
+      case 'bidders':   await renderBidders();   break;
+      case 'scribe':    await renderScribe();    break;
+      case 'misc':      await renderMisc();      break;
+      case 'checkout': {
+        const resultDiv   = document.getElementById('checkout-result');
+        const bidderInput = document.getElementById('co-bidder-num');
+        if (resultDiv?.innerHTML.trim() && bidderInput?.value) {
+          await loadCheckout();
+        }
+        break;
+      }
+    }
+
+    window.scrollTo(scrollX, scrollY);
+  } catch (e) {
+    console.warn('Silent refresh error:', e);
+  } finally {
+    _silentRefresh = false;
+  }
 }
 
 function startAutoRefresh() {
@@ -2626,15 +2735,336 @@ function renderManual() {
   };
 
   const sections = [
-    { icon: manualIcons.overview,  title: 'Overview — How the app works', content: `<p>This app manages every part of the koi auction — from setting up fish before the event, to recording sales during the auction, to checking out bidders at the end.</p><br><p><strong>General flow:</strong></p><ol style="margin-left:20px;margin-top:8px;line-height:2;"><li><strong>Before:</strong> Add donors, create tanks, add fish, register bidders.</li><li><strong>During:</strong> Use the Scribe tab to record each fish sale.</li><li><strong>After:</strong> Use Misc for additional purchases. Use Checkout to total bills and record payments.</li></ol><br><p>Works on any device. Multiple volunteers can use it simultaneously. Data updates every 30 seconds.</p>` },
-    { icon: manualIcons.donors,    title: 'Donors tab — Adding fish donors', content: `<p>Add donors before adding any fish.</p><br><ol style="margin-left:20px;line-height:2;"><li>Click <strong>+ Add donor</strong>.</li><li>Fill in name, phone, email.</li><li>Select <strong>Type</strong> — determines payout percentage.</li><li>Enter number of fish they brought.</li><li>Click <strong>Save donor</strong>.</li></ol><br><p><strong>Edit:</strong> Orange Edit button. <strong>Delete:</strong> Red Delete button — blocked if fish are linked.</p>` },
-    { icon: manualIcons.fish,      title: 'Fish tab — Setting up tanks and fish', content: `<p>Create tanks first, then add fish to each tank.</p><br><p><strong>Create a tank:</strong> Click <strong>+ New tank</strong>, enter a letter and optional description.</p><br><p><strong>Add fish:</strong> Click <strong>+ Add fish</strong> on a tank card. Fish number auto-fills to the next available. Select donor — type auto-fills. Click <strong>Save fish</strong>.</p><br><p>Fish ID = tank letter + fish number (e.g. A1). The fish page shows both sale status (sold/available) and payment status (paid/unpaid).</p>` },
-    { icon: manualIcons.bidders,   title: 'Bidders tab — Registering auction participants', content: `<p>Every bidder needs a unique number. Bidder number auto-fills to the next available when registering.</p><br><ol style="margin-left:20px;line-height:2;"><li>Click <strong>+ Register bidder</strong>.</li><li>Confirm or change the bidder number.</li><li>Fill in name, phone, email, membership status.</li><li>Click <strong>Save</strong>.</li></ol><br><p>Status badges: <strong>Unpaid</strong> (red), <strong>Partially paid</strong> (yellow), <strong>Paid</strong> (green with amount).</p>` },
-    { icon: manualIcons.scribe,    title: 'Scribe tab — Recording sales during the auction', content: `<p>Used during the live auction to record each fish sale.</p><br><ol style="margin-left:20px;line-height:2;"><li>Select the <strong>tank</strong> from the dropdown.</li><li>Select the <strong>fish</strong> — only unsold fish appear.</li><li>Enter the <strong>bidder number</strong> — their name appears automatically for verification.</li><li>Enter the <strong>sale price</strong>.</li><li>Press <strong>Enter</strong> or click <strong>✓ Record sale</strong>.</li></ol><br><p>The sales log can be sorted by recency, tank, bidder, or donor. Each row has Edit and Delete buttons.</p>` },
-    { icon: manualIcons.misc,      title: 'Misc tab — Additional purchases', content: `<p>Record non-auction purchases. Enter bidder number — name appears for verification.</p><br><ol style="margin-left:20px;line-height:2;"><li>Enter bidder number.</li><li>Select item from dropdown.</li><li>For <strong>quantity-based</strong> items: enter how many. For <strong>fixed amount</strong> items: enter the dollar amount directly.</li><li>Click <strong>+ Add purchase</strong>.</li></ol>` },
-    { icon: manualIcons.checkout,  title: 'Checkout tab — Taking payment from bidders', content: `<p>Enter a bidder number — their name appears for verification. Click <strong>Look up</strong>.</p><br><p>The app shows all fish won, misc purchases, and grand total. Non-members will be offered a membership once per session.</p><br><p><strong>Partial payments:</strong> Change the amount field to the partial amount. Look them up again later to pay the rest.</p><br><p>Click <strong>↻ Refresh</strong> before taking payment to catch any last-minute additions. Click <strong>🖨️ Print receipt</strong> to print or save as PDF.</p>` },
-    { icon: manualIcons.admin,     title: 'Admin tab — Managing the auction', content: `<p>Password protected. Default password is <strong>admin1234</strong>.</p><br><p><strong>Years:</strong> Switch between years or create new ones. Delete button appears on inactive years — requires typing the year number to confirm.</p><br><p><strong>Donor types:</strong> Add, edit, or delete payout percentage types. Changes update all linked fish.</p><br><p><strong>Misc items:</strong> Manage the price list. Each item can be quantity-based or fixed amount.</p><br><p><strong>Exports:</strong> Download formatted Excel files for all data including donor payouts.</p>` },
-    { icon: manualIcons.help,      title: 'Troubleshooting — Common issues', content: `<p><strong>Fish not found in Scribe:</strong> Make sure it was added in the Fish tab and hasn't already been sold.</p><br><p><strong>Bidder not found:</strong> Register them in the Bidders tab first.</p><br><p><strong>Fish already sold:</strong> Check the scribe log. Delete the wrong sale and re-enter.</p><br><p><strong>Can't delete a donor:</strong> Reassign or delete their fish first.</p><br><p><strong>Can't delete a bidder:</strong> Delete their sales and misc purchases first.</p><br><p><strong>Wrong totals in Checkout:</strong> Click ↻ Refresh.</p><br><p><strong>Wrong year showing:</strong> Go to Admin and switch to the correct year.</p>` }
+    { icon: manualIcons.overview, title: 'Overview — How the app works', content: `
+      <p>This app manages the entire Pikes Peak Koi &amp; Water Garden Society Re-Homing Auction — from pre-auction setup all the way through checkout and donor payout reporting.</p>
+      <br>
+      <p><strong>Who uses which tabs:</strong></p>
+      <ul style="margin-left:20px;margin-top:6px;line-height:2.2;">
+        <li><strong>Setup team (before the event):</strong> Admin → Donors → Fish → Bidders</li>
+        <li><strong>Scribes (during the auction):</strong> Scribe tab only</li>
+        <li><strong>Checkout volunteers (end of event):</strong> Misc and Checkout tabs</li>
+        <li><strong>Auction chair / admin:</strong> Dashboard for live totals, Admin for exports and management</li>
+      </ul>
+      <br>
+      <p><strong>Key things to know before you start:</strong></p>
+      <ul style="margin-left:20px;margin-top:6px;line-height:2.2;">
+        <li>Works on any device — phone, tablet, or computer. No app to install.</li>
+        <li>Multiple volunteers can use it simultaneously from any device</li>
+        <li>Data syncs automatically every 30 seconds in the background — you will never see a loading flash during normal use</li>
+        <li>Nothing is permanent until saved — closing a modal without clicking Save discards your changes</li>
+        <li>When the year is <strong>locked</strong> by an admin, a red banner appears at the top of every page and all edit/add/delete buttons are hidden for non-admins</li>
+      </ul>
+      <br>
+      <p><strong>Typical auction-day order of operations:</strong></p>
+      <ol style="margin-left:20px;margin-top:6px;line-height:2.2;">
+        <li>Admin logs in, confirms the correct year is active, and verifies donor types and misc items are set up</li>
+        <li>Setup team adds donors, creates tanks, and adds fish to tanks</li>
+        <li>Registration desk registers bidders as people arrive</li>
+        <li>Scribes record each fish sale during the auction using the Scribe tab</li>
+        <li>Checkout volunteers add misc purchases and take payment using the Misc and Checkout tabs</li>
+        <li>Admin exports donor payout reports at the end</li>
+      </ol>
+    `},
+    { icon: manualIcons.overview, title: 'Before the Auction — Setup checklist', content: `
+      <p>Complete these steps before the auction begins. Steps 1–3 can be done days in advance.</p>
+      <br>
+      <p><strong>Step 1 — Admin setup</strong> (Admin tab → log in with password)</p>
+      <ol style="margin-left:20px;line-height:2.2;">
+        <li>Confirm the correct auction year is active at the top of the Admin panel. Create a new year if needed — misc items and donor types copy over automatically.</li>
+        <li>Set up <strong>Donor types</strong> under "Donor types &amp; payout percentages." Each type has a name and a payout percentage (e.g. "Dropoff — 40%"). Every fish you add will be assigned one of these types.</li>
+        <li>Set up <strong>Misc items</strong> under "Misc items price list" — add anything sold at checkout: memberships, food, raffle tickets, etc.</li>
+      </ol>
+      <br>
+      <p><strong>Step 2 — Add donors</strong> (Donors tab)</p>
+      <ol style="margin-left:20px;line-height:2.2;">
+        <li>Click <strong>+ Add donor</strong> for each person donating fish</li>
+        <li>Enter name, phone, email, type (Dropoff or Pickup), and estimated number of fish</li>
+        <li>Optionally click <strong>+ Add address</strong> to save their mailing address for check mailing</li>
+        <li>After all fish are entered, click <strong>↻ Sync fish counts</strong> to update the fish count numbers to match reality</li>
+      </ol>
+      <br>
+      <p><strong>Step 3 — Create tanks</strong> (Fish tab)</p>
+      <ol style="margin-left:20px;line-height:2.2;">
+        <li>Click <strong>+ New tank</strong> for each physical tank at the event</li>
+        <li>Assign a letter (A, B, C…) and an optional description (e.g. "Koi", "Goldfish")</li>
+      </ol>
+      <br>
+      <p><strong>Step 4 — Add fish</strong> (Fish tab)</p>
+      <ol style="margin-left:20px;line-height:2.2;">
+        <li>On each tank card, click <strong>+ Add fish</strong></li>
+        <li>Fish number auto-fills to the next in that tank — adjust if needed</li>
+        <li>Enter a description, select the donor, and select the payout type</li>
+        <li>Click <strong>Save fish</strong>. The fish ID (e.g. B4) is tank letter + fish number.</li>
+      </ol>
+      <br>
+      <p><strong>Step 5 — Register bidders</strong> (Bidders tab — can be done day-of as people arrive)</p>
+      <ol style="margin-left:20px;line-height:2.2;">
+        <li>Click <strong>+ Register bidder</strong></li>
+        <li>The next available number is pre-filled — change if you have a specific number reserved</li>
+        <li>Enter name, phone, and whether they are a club member</li>
+        <li>Click <strong>Save</strong> and hand them their number card</li>
+      </ol>
+    `},
+    { icon: manualIcons.overview, title: 'Dashboard — Live auction totals', content: `
+      <p>The Dashboard shows a real-time summary of the auction. It refreshes automatically every 30 seconds — no need to reload the page.</p>
+      <br>
+      <p><strong>Summary cards (top row):</strong></p>
+      <ul style="margin-left:20px;line-height:2.2;">
+        <li><strong>Fish sold</strong> — how many fish have been sold vs. total registered</li>
+        <li><strong>Total revenue</strong> — sum of all fish sale prices</li>
+        <li><strong>Club net</strong> — revenue minus all donor payouts and misc item costs</li>
+      </ul>
+      <br>
+      <p><strong>Tabs (bottom section):</strong></p>
+      <ul style="margin-left:20px;line-height:2.2;">
+        <li><strong>Donor payouts</strong> — what each donor is owed based on their fish sales and assigned payout percentage. This matches the ⭐ Donor Payouts export exactly.</li>
+        <li><strong>Misc items sold</strong> — quantity and revenue breakdown for each item in the misc price list</li>
+        <li><strong>Payment methods</strong> — totals collected by cash, check, and credit card</li>
+      </ul>
+      <br>
+      <p>The Dashboard is read-only. All numbers update live as scribes record sales and checkout volunteers record payments.</p>
+    `},
+    { icon: manualIcons.donors, title: 'Donors tab — Managing fish donors', content: `
+      <p>Donors are the people bringing fish to the auction. <strong>Add all donors before adding fish</strong> — every fish must be linked to a donor.</p>
+      <br>
+      <p><strong>Adding a new donor:</strong></p>
+      <ol style="margin-left:20px;line-height:2.2;">
+        <li>Click <strong>+ Add donor</strong></li>
+        <li>Enter <strong>first and last name</strong> (required)</li>
+        <li>Enter <strong>phone</strong> and <strong>email</strong> (optional but useful for follow-up)</li>
+        <li>Select <strong>Type</strong>: <em>Dropoff</em> means the donor delivers fish to the event themselves; <em>Pickup</em> means the club collects fish from their location</li>
+        <li>Enter <strong># of fish</strong> — how many fish this donor is bringing (estimated). This is for planning; use the Sync button to update it to match the actual fish entered later.</li>
+        <li>To record a mailing address, click <strong>+ Add address</strong>. The address field slides open — enter the full address in one line. Click <strong>− Hide address</strong> to collapse it again without losing the value.</li>
+        <li>Click <strong>Save donor</strong></li>
+      </ol>
+      <br>
+      <p><strong>Address in the donor list:</strong> Donors with a saved address show a <strong>▸</strong> arrow next to their name. Click anywhere on their row (except Edit/Delete) to expand the row and view their address. Click again to collapse. This keeps the table compact while making addresses accessible.</p>
+      <br>
+      <p><strong>Sync fish counts:</strong> Click <strong>↻ Sync fish counts</strong> to automatically recalculate every donor's "# of fish" by counting their actual fish in the system. Run this after all fish have been entered to keep the number accurate.</p>
+      <br>
+      <p><strong>Editing a donor:</strong> Click the orange <strong>Edit</strong> button. All fields including address are editable. If the donor has an address saved it will be shown automatically when the edit modal opens.</p>
+      <br>
+      <p><strong>Deleting a donor:</strong> Click the red <strong>Delete</strong> button. If the donor has fish linked to them, deletion is blocked — you must reassign or delete those fish first.</p>
+    `},
+    { icon: manualIcons.fish, title: 'Fish tab — Tanks and fish management', content: `
+      <p>Fish are organized into physical tanks at the event. Each fish has a unique ID made up of its tank letter and number (e.g. <strong>A3</strong>, <strong>C12</strong>). Create tanks before adding fish.</p>
+      <br>
+      <p><strong>Creating a tank:</strong></p>
+      <ol style="margin-left:20px;line-height:2.2;">
+        <li>Click <strong>+ New tank</strong></li>
+        <li>Enter a single letter (A, B, C…). Each letter must be unique.</li>
+        <li>Add an optional description (e.g. "Large koi", "Goldfish") to help volunteers know which tank is which</li>
+        <li>Click <strong>Create tank</strong></li>
+      </ol>
+      <br>
+      <p><strong>Adding a fish to a tank:</strong></p>
+      <ol style="margin-left:20px;line-height:2.2;">
+        <li>Find the tank card and click <strong>+ Add fish</strong></li>
+        <li><strong>Fish number</strong> auto-fills to the next available in that tank — change it if you need a specific number</li>
+        <li>Enter a <strong>description</strong> — breed, coloring, size, anything that identifies the fish at auction</li>
+        <li>Select the <strong>donor</strong> from the dropdown (all donors for this year appear here)</li>
+        <li>Select the <strong>payout type</strong> — this determines what percentage of the sale price goes back to the donor</li>
+        <li>Click <strong>Save fish</strong></li>
+      </ol>
+      <br>
+      <p><strong>Fish status indicators on each row:</strong></p>
+      <ul style="margin-left:20px;line-height:2.2;">
+        <li><strong>Available</strong> — not yet sold</li>
+        <li><strong>Sold — Paid</strong> — sold and the winning bidder has paid in full</li>
+        <li><strong>Sold — Unpaid</strong> — sold but the bidder has not yet paid</li>
+      </ul>
+      <br>
+      <p><strong>Filtering the fish list:</strong> Use the <strong>All tanks</strong> button or individual tank letter buttons at the top to filter which tank you are viewing.</p>
+      <br>
+      <p><strong>Editing a fish:</strong> Click the orange <strong>Edit</strong> button to change the number, description, donor, or payout type.</p>
+      <br>
+      <p><strong>Deleting a fish:</strong> Click the red <strong>Delete</strong> button. If the fish has been sold, the sale record is deleted first.</p>
+      <br>
+      <p><strong>Deleting a tank:</strong> Click <strong>Delete tank</strong> at the bottom of the tank card. The tank must have no fish in it — delete or move all fish first.</p>
+    `},
+    { icon: manualIcons.bidders, title: 'Bidders tab — Registering auction participants', content: `
+      <p>Every person bidding needs to be registered with a unique bidder number before they can buy fish or check out. This is typically handled at a registration desk as people arrive.</p>
+      <br>
+      <p><strong>Registering a bidder:</strong></p>
+      <ol style="margin-left:20px;line-height:2.2;">
+        <li>Click <strong>+ Register bidder</strong></li>
+        <li>The <strong>bidder number</strong> auto-fills to the next available — you can change it (e.g. if you have reserved numbers for volunteers or committee members)</li>
+        <li>Enter <strong>first name, last name</strong> (required) and <strong>phone</strong> (optional)</li>
+        <li>Check <strong>Member</strong> if they are a current club member — this affects the membership prompt at checkout</li>
+        <li>Click <strong>Save</strong> and hand them a number card</li>
+      </ol>
+      <br>
+      <p><strong>Status badges:</strong></p>
+      <ul style="margin-left:20px;line-height:2.2;">
+        <li><strong>No purchases</strong> (green) — registered but hasn't won or bought anything yet</li>
+        <li><strong>Unpaid</strong> (red) — has purchases but no payment recorded</li>
+        <li><strong>Partially paid</strong> (yellow) — has made at least one payment but still has a remaining balance</li>
+        <li><strong>Paid $X.XX</strong> (green) — balance is fully settled</li>
+      </ul>
+      <br>
+      <p><strong>If two volunteers register the same bidder number simultaneously:</strong> The second registration will fail with a "bidder number already taken" message and will suggest the next available number. This is normal — just confirm the new number and save.</p>
+      <br>
+      <p><strong>Deleting a bidder:</strong> Only possible if they have no sales or misc purchases recorded. Delete their records from the Scribe and Misc tabs first.</p>
+    `},
+    { icon: manualIcons.scribe, title: 'Scribe tab — Recording sales during the auction', content: `
+      <p><strong>This is the most critical tab during the live auction.</strong> The scribe's job is to record each fish sale the moment it happens. Multiple scribes can record sales simultaneously from different devices.</p>
+      <br>
+      <p><strong>Recording a sale — 3-step wizard:</strong></p>
+      <ol style="margin-left:20px;line-height:2.2;">
+        <li>Click the large <strong>✓ Record sale</strong> button</li>
+        <li><strong>Step 1 — Tank:</strong> Tap the tank the fish came from (e.g. "Tank A")</li>
+        <li><strong>Step 2 — Fish:</strong> Tap the fish that was sold. <em>Only unsold fish appear here</em> — if a fish is missing it has already been sold</li>
+        <li><strong>Step 3 — Bidder &amp; price:</strong> Enter the bidder number. The bidder's name appears automatically — verify it matches before continuing. Enter the sale price. Press <strong>Enter</strong> or tap <strong>✓ Record sale</strong>.</li>
+      </ol>
+      <br>
+      <p>You can use the <strong>← Back</strong> button at any step to go back and correct a selection.</p>
+      <br>
+      <p><strong>What happens if two scribes try to sell the same fish at the same time?</strong> The second one sees a clear error message — "This fish was just sold by another volunteer." The sale is already recorded correctly. No action is needed from the second scribe.</p>
+      <br>
+      <p><strong>Sales log:</strong> All recorded sales appear in the log below the button. Use the <strong>Sort by</strong> dropdown to view them by:</p>
+      <ul style="margin-left:20px;line-height:2.2;">
+        <li><strong>Most recent</strong> — newest sale at top (default, best during the auction)</li>
+        <li><strong>Tank</strong> — ordered by tank letter and fish number</li>
+        <li><strong>Bidder</strong> — ordered by bidder number (useful for checkout)</li>
+        <li><strong>Donor</strong> — ordered by donor last name (useful for payout prep)</li>
+      </ul>
+      <br>
+      <p><strong>Correcting a mistake:</strong></p>
+      <ul style="margin-left:20px;line-height:2.2;">
+        <li>Click <strong>Edit</strong> on a sale row to change the bidder number or sale price</li>
+        <li>Click <strong>Delete</strong> to remove a sale entirely — this makes the fish available again in the wizard</li>
+      </ul>
+    `},
+    { icon: manualIcons.misc, title: 'Misc tab — Additional purchases', content: `
+      <p>The Misc tab records anything a bidder purchases that isn't an auction fish — club memberships, food, raffle tickets, etc. Items must be set up in the Admin price list first.</p>
+      <br>
+      <p><strong>Adding a purchase:</strong></p>
+      <ol style="margin-left:20px;line-height:2.2;">
+        <li>Enter the bidder's <strong>number</strong> — their name appears to the right to confirm you have the right person</li>
+        <li>Select the <strong>item</strong> from the dropdown. The price is shown next to the item name.</li>
+        <li>Enter the <strong>quantity</strong> (default is 1)</li>
+        <li>Click <strong>+ Add purchase</strong></li>
+      </ol>
+      <br>
+      <p>The purchase is immediately added to the bidder's total and will appear when they check out.</p>
+      <br>
+      <p><strong>Purchase log:</strong> All misc purchases are listed below the form, newest first. Click <strong>Edit</strong> to correct a quantity or price, or <strong>Delete</strong> to remove it.</p>
+      <br>
+      <p><strong>Note about memberships:</strong> Memberships can be added here or they will be offered automatically during checkout for non-members. Either method adds it to the bidder's bill.</p>
+    `},
+    { icon: manualIcons.checkout, title: 'Checkout tab — Taking payment from bidders', content: `
+      <p>When a bidder is ready to pay and leave, look them up here to see everything they owe and record their payment.</p>
+      <br>
+      <p><strong>Looking up a bidder:</strong></p>
+      <ol style="margin-left:20px;line-height:2.2;">
+        <li>Enter their <strong>bidder number</strong> in the box</li>
+        <li>Click <strong>Look up</strong> (or press Enter)</li>
+        <li>Their name, all fish purchases, all misc purchases, and grand total appear. Payment history is shown if they have made any previous payments.</li>
+      </ol>
+      <br>
+      <p><strong>Membership prompt:</strong> If the bidder is not a club member, a membership offer appears once per session. Select <strong>Individual Membership</strong> or <strong>Family Membership</strong> and click <strong>Yes, add it</strong>. This adds the membership to their bill. Click <strong>No thanks</strong> to skip — you won't be prompted again this session for this bidder.</p>
+      <br>
+      <p><strong>Recording a payment:</strong></p>
+      <ol style="margin-left:20px;line-height:2.2;">
+        <li>The <strong>payment amount</strong> field is pre-filled with the full remaining balance</li>
+        <li>If they are paying less than the full amount (partial payment), change the amount to what they are paying now. They can return and pay the rest later — look them up again and the remaining balance will be shown.</li>
+        <li>Select the <strong>payment method</strong>: Cash, Credit Card, or Check</li>
+        <li>For check or card, optionally enter a reference (check number or last 4 digits)</li>
+        <li>Click <strong>✓ Record payment</strong></li>
+      </ol>
+      <br>
+      <p><strong>Printing a receipt:</strong> Click <strong>🖨️ Print receipt</strong> at any time after looking up a bidder. This opens a print-ready receipt — use your browser's print dialog or save as a PDF.</p>
+      <br>
+      <p><strong>Important — before taking payment:</strong> If a scribe has just recorded a new fish sale for this bidder in the last few seconds, click <strong>↻ Refresh</strong> to reload the latest data before charging them. The total is always accurate when the page first loads, but new sales recorded by others after that point won't appear until you refresh.</p>
+    `},
+    { icon: manualIcons.admin, title: 'Admin tab — Auction management', content: `
+      <p>The Admin tab is password protected. Type the admin password and press <strong>Enter</strong> (or click Login). The default password is <strong>admin1234</strong> — change it after first use.</p>
+      <br>
+      <p><strong>Auction years:</strong></p>
+      <ul style="margin-left:20px;line-height:2.2;">
+        <li>All data (donors, fish, bidders, sales) is organized by year. Only one year is "active" at a time.</li>
+        <li>Click <strong>Switch to this year</strong> on any year to make it active across all devices instantly</li>
+        <li>Click <strong>+ Create new year</strong>, enter the year number, and confirm — misc items and donor types are automatically copied from the previous year</li>
+        <li>To delete an old year: click the red <strong>Delete year</strong> button (only visible on inactive years), then type the year number to confirm. <strong>This permanently deletes all data for that year and cannot be undone.</strong></li>
+      </ul>
+      <br>
+      <p><strong>Data lock:</strong></p>
+      <ul style="margin-left:20px;line-height:2.2;">
+        <li>Toggle to lock the current year. All add/edit/delete buttons disappear for everyone on all devices.</li>
+        <li>A red "This year is locked" banner appears at the top of every page</li>
+        <li>The admin can still access Admin functions while locked</li>
+        <li>Use this after the auction to prevent accidental changes while doing reporting</li>
+      </ul>
+      <br>
+      <p><strong>Donor types &amp; payout percentages:</strong></p>
+      <ul style="margin-left:20px;line-height:2.2;">
+        <li>Add a type for each payout tier (e.g. "Standard Dropoff — 40%", "Premium Pickup — 50%")</li>
+        <li>The percentage determines how much of each fish's sale price goes to the donor</li>
+        <li>Editing a type automatically updates the payout percentage on every fish that uses it</li>
+        <li>A type cannot be deleted if any donors or fish are currently using it</li>
+      </ul>
+      <br>
+      <p><strong>Misc items price list:</strong></p>
+      <ul style="margin-left:20px;line-height:2.2;">
+        <li>Add every item that can be purchased at checkout</li>
+        <li><em>No cost</em> type — all revenue goes to the club (food, raffle tickets)</li>
+        <li><em>Cost based</em> type — enter a per-unit club cost to track net revenue (membership cards, purchased items)</li>
+      </ul>
+      <br>
+      <p><strong>Membership prompt:</strong> Toggle whether non-members are automatically offered a membership when checked out. Turn off if you are not selling memberships at this event.</p>
+      <br>
+      <p><strong>Change password:</strong> Enter the current password, then the new password twice. Must be at least 6 characters. Takes effect immediately on all devices.</p>
+      <br>
+      <p><strong>Export data:</strong> Downloads a formatted Excel (.xlsx) file. All exports include a title row and styled columns.</p>
+      <ul style="margin-left:20px;line-height:2.2;">
+        <li><strong>Export donors</strong> — donor list with fish counts</li>
+        <li><strong>Export fish</strong> — all fish with sale status and prices, grouped by tank</li>
+        <li><strong>Export bidders</strong> — all bidders with payment status and total collected</li>
+        <li><strong>Export sales</strong> — every individual sale with fish ID, bidder, price, and date</li>
+        <li><strong>Export misc</strong> — misc purchases with revenue and club cost breakdown</li>
+        <li><strong>⭐ Export donor payouts</strong> — the most important report: each donor's fish, sale prices, payout percentage, and exact amount owed. Use this to calculate and write donor checks.</li>
+      </ul>
+    `},
+    { icon: manualIcons.help, title: 'Troubleshooting — Common issues', content: `
+      <p><strong>A fish isn't showing in the Scribe wizard</strong><br>
+      Either it hasn't been added to the Fish tab yet, or it has already been sold. Check the Sales log in the Scribe tab — if it's there, it was already sold. If not, add it in the Fish tab.</p>
+      <br>
+      <p><strong>"This fish was just sold by another volunteer"</strong><br>
+      Two scribes tried to record the same fish at the same time. The first one went through correctly. No action needed — the sale is recorded. The second scribe should move on to the next fish.</p>
+      <br>
+      <p><strong>"Bidder not found" when recording a sale or misc purchase</strong><br>
+      The bidder hasn't been registered yet. They need to go to the registration desk (Bidders tab) to get a number first.</p>
+      <br>
+      <p><strong>Wrong bidder on a sale</strong><br>
+      Go to the Scribe tab, find the sale in the log, and click <strong>Edit</strong>. Enter the correct bidder number and save.</p>
+      <br>
+      <p><strong>Wrong price on a sale</strong><br>
+      Go to the Scribe tab, find the sale in the log, and click <strong>Edit</strong>. Correct the price. All totals and donor payouts update immediately.</p>
+      <br>
+      <p><strong>Can't delete a donor</strong><br>
+      The donor has fish linked to them. Go to the Fish tab, and either reassign those fish to a different donor (Edit) or delete them first.</p>
+      <br>
+      <p><strong>Can't delete a bidder</strong><br>
+      The bidder has sales or misc purchases recorded. Delete their fish sales in the Scribe tab and their misc purchases in the Misc tab first.</p>
+      <br>
+      <p><strong>Checkout total looks wrong or is missing a recent purchase</strong><br>
+      Click <strong>↻ Refresh</strong> in the checkout panel to reload the latest data for that bidder.</p>
+      <br>
+      <p><strong>A bidder says they already paid but it still shows unpaid</strong><br>
+      The payment may have been recorded under a different bidder number. Look up their number in the Bidders tab to confirm the correct number, then look them up again in Checkout.</p>
+      <br>
+      <p><strong>Everything is greyed out and I can't add or edit anything</strong><br>
+      The year has been locked by an admin. A red banner appears at the top of every page. Only an admin can unlock it — go to Admin → Data lock and toggle it off.</p>
+      <br>
+      <p><strong>The app is showing the wrong auction year</strong><br>
+      Go to Admin → Auction years and click <strong>Switch to this year</strong> on the correct year. This updates all devices simultaneously.</p>
+      <br>
+      <p><strong>A donor's payout amount looks wrong</strong><br>
+      Each fish's payout = <em>sale price × that fish's payout %</em>. Check the fish's assigned payout type in the Fish tab (Edit the fish). You can also run <strong>⭐ Export donor payouts</strong> from Admin for a full line-by-line breakdown to verify.</p>
+      <br>
+      <p><strong>The page looks frozen or data seems very old</strong><br>
+      The app auto-refreshes every 30 seconds. Try navigating to a different tab and back. If issues persist, reload the page — you won't lose any saved data.</p>
+    `}
   ];
 
   const accordion = document.getElementById('manual-accordion');
