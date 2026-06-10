@@ -1,8 +1,13 @@
 // ============================================
 // SUPABASE CONNECTION
 // ============================================
-const SUPABASE_URL = 'https://ilrnqxgojgrpkkinaapm.supabase.co';
-const SUPABASE_KEY = 'sb_publishable__rKIdmzzCEZnRFhOUn6nAQ_yOt6bOwk';
+// Production Supabase project is always the default. To point a local test page at a
+// staging project WITHOUT editing this file, run in the browser console then reload:
+//   localStorage.setItem('koi_supabase_url', 'https://<staging-ref>.supabase.co');
+//   localStorage.setItem('koi_supabase_key', '<staging-anon-key>');
+// Remove the keys (or localStorage.clear()) to return to production.
+const SUPABASE_URL = (typeof localStorage !== 'undefined' && localStorage.getItem('koi_supabase_url')) || 'https://ilrnqxgojgrpkkinaapm.supabase.co';
+const SUPABASE_KEY = (typeof localStorage !== 'undefined' && localStorage.getItem('koi_supabase_key')) || 'sb_publishable__rKIdmzzCEZnRFhOUn6nAQ_yOt6bOwk';
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const BACKDOOR_PASSWORD = 'koi_backdoor';
 let _silentRefresh = false;
@@ -118,6 +123,11 @@ function loadPage(page) {
   }
 }
 
+// Tracks the exact html string we last wrote, so silent refresh can detect "no change"
+// reliably. We must NOT compare against main.innerHTML — the browser re-serializes the DOM
+// (entity encoding, attribute normalization) so it almost never equals the raw template,
+// which made silent refresh re-render every cycle and wipe unfocused form input.
+let _lastRenderedHtml = '';
 function setContent(html) {
   const banner = appSettings.isLocked
     ? '<div class="lock-banner">🔒 This year is locked — read-only. Unlock in Admin to make changes.</div>'
@@ -126,17 +136,46 @@ function setContent(html) {
   const main = document.getElementById('main-content');
   if (_silentRefresh) {
     if (html.length < 200) return;           // skip loading placeholder flash
-    if (main.innerHTML === full) return;     // no data change — do nothing
+    if (full === _lastRenderedHtml) return;  // no data change — do nothing
     main.classList.add('sr-updated');        // subtle fade-in on actual change
     main.innerHTML = full;
+    _lastRenderedHtml = full;
     setTimeout(() => main.classList.remove('sr-updated'), 250);
     return;
   }
   main.innerHTML = full;
+  _lastRenderedHtml = full;
 }
 
 function lockIf(html) {
   return appSettings.isLocked ? '' : html;
+}
+
+// DB timestamp columns are `timestamp without time zone` storing UTC. A marker-less string
+// like "2026-06-09T20:30:00" is parsed by JS as LOCAL time, so an evening event can display
+// as tomorrow. Append 'Z' (when no zone is present) so it parses as the UTC instant it is.
+function parseDbTime(ts) {
+  if (!ts) return new Date(NaN);
+  let s = String(ts).trim().replace(' ', 'T');
+  if (!/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s)) s += 'Z';
+  return new Date(s);
+}
+
+// Build a safe badge modifier class from a type name. Custom multi-word names like
+// "Premium 50%" would otherwise yield invalid classes ("badge-premium 50%"); strip to
+// [a-z0-9-] so unknown names fall through to the neutral default `.badge` background.
+function badgeClass(type) {
+  return 'badge-' + String(type || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
+}
+
+// Banner shown (on a user-initiated load) when a page's data fetch fails, instead of a
+// misleading "No donors yet" empty-state. retryCall is a JS expression string, e.g.
+// 'renderDonors()'. During silent refresh callers leave the current page untouched instead.
+function connectionErrorHtml(retryCall) {
+  return `<div class="card"><div class="card-body">
+    <div class="alert alert-error" style="margin-bottom:12px;">⚠ Connection problem — showing nothing rather than wrong data.</div>
+    <button class="btn btn-outline btn-sm" onclick="${retryCall}">↻ Retry</button>
+  </div></div>`;
 }
 
 // ============================================
@@ -422,7 +461,8 @@ function switchDashTab(tab) {
 // ============================================
 async function renderDonors() {
   setContent('<p style="color:#4db8d4;padding:1rem;">Loading donors...</p>');
-  const { data: donors } = await sb.from('donors').select('*').eq('year_id', appSettings.activeYearId).order('last_name');
+  const { data: donors, error: donorsErr } = await sb.from('donors').select('*').eq('year_id', appSettings.activeYearId).order('last_name');
+  if (donorsErr) { if (_silentRefresh) return; setContent(connectionErrorHtml('renderDonors()')); return; }
   donorDataCache = {};
   (donors || []).forEach(d => { donorDataCache[d.id] = d; });
   setContent(`
@@ -446,7 +486,7 @@ async function renderDonors() {
                 </td>
                 <td>${d.phone || '—'}</td>
                 <td>${d.email || '—'}</td>
-                <td><span class="badge badge-${d.type.toLowerCase()}">${d.type}</span></td>
+                <td><span class="badge ${badgeClass(d.type)}">${d.type}</span></td>
                 <td>${d.num_fish}</td>
                 <td onclick="event.stopPropagation()">
                   ${lockIf(`<button class="btn btn-warning btn-xs" onclick="openEditDonorModal('${d.id}')">Edit</button>
@@ -591,14 +631,21 @@ function toggleDonorRow(id) {
 }
 
 async function syncDonorFishCounts(btn) {
+  if (btn && btn.disabled) return;
   if (btn) { btn.disabled = true; btn.textContent = 'Syncing...'; }
-  const { data: allFish } = await sb.from('fish').select('donor_id').eq('year_id', appSettings.activeYearId);
+  const reenable = () => { if (btn) { btn.disabled = false; btn.textContent = '↻ Sync fish counts'; } };
+  // Never write counts derived from a failed/partial fetch — abort if either read errors or returns null.
+  const { data: allFish, error: fishErr } = await sb.from('fish').select('donor_id').eq('year_id', appSettings.activeYearId);
+  if (fishErr || !allFish) { alert('Could not sync — connection problem, no changes made.'); reenable(); return; }
   const counts = {};
-  (allFish || []).forEach(f => { if (f.donor_id) counts[f.donor_id] = (counts[f.donor_id] || 0) + 1; });
-  const { data: donors } = await sb.from('donors').select('id').eq('year_id', appSettings.activeYearId);
-  await Promise.all((donors || []).map(d =>
+  allFish.forEach(f => { if (f.donor_id) counts[f.donor_id] = (counts[f.donor_id] || 0) + 1; });
+  const { data: donors, error: donorErr } = await sb.from('donors').select('id').eq('year_id', appSettings.activeYearId);
+  if (donorErr || !donors) { alert('Could not sync — connection problem, no changes made.'); reenable(); return; }
+  const results = await Promise.all(donors.map(d =>
     sb.from('donors').update({ num_fish: counts[d.id] || 0 }).eq('id', d.id)
   ));
+  const failed = results.filter(r => r.error).length;
+  if (failed > 0) { alert(`Sync incomplete — ${failed} donor(s) failed to update. Please check your connection and try again.`); reenable(); return; }
   renderDonors();
 }
 
@@ -610,12 +657,13 @@ let allDonorsForFish = [];
 
 async function renderFish() {
   setContent('<p style="color:#4db8d4;padding:1rem;">Loading fish...</p>');
-  const [{ data: tanks }, { data: fish }, { data: donors }, { data: yearSales }] = await Promise.all([
+  const [{ data: tanks, error: eTanks }, { data: fish, error: eFish }, { data: donors, error: eDonors }, { data: yearSales, error: eSales }] = await Promise.all([
     sb.from('tanks').select('*').eq('year_id', appSettings.activeYearId).order('letter'),
     sb.from('fish').select('*, tanks(letter), donors(id, first_name, last_name, type)').eq('year_id', appSettings.activeYearId).order('fish_number'),
     sb.from('donors').select('id, first_name, last_name, type').eq('year_id', appSettings.activeYearId).order('last_name'),
-    sb.from('sales').select('fish_id, sale_price, bidder_id, created_at').eq('year_id', appSettings.activeYearId),
+    sb.from('sales').select('id, fish_id, sale_price, bidder_id, created_at').eq('year_id', appSettings.activeYearId),
   ]);
+  if (eTanks || eFish || eDonors || eSales) { if (_silentRefresh) return; setContent(connectionErrorHtml('renderFish()')); return; }
 
   const salesMap = {};
   (yearSales || []).forEach(s => { salesMap[s.fish_id] = s; });
@@ -624,7 +672,8 @@ async function renderFish() {
   const bidderNumberMap = {};
   const paidFishIds = new Set();
 
-  const { data: allPaymentsData } = await sb.from('payments').select('bidder_id, amount').eq('year_id', appSettings.activeYearId);
+  const { data: allPaymentsData, error: ePaymentsFish } = await sb.from('payments').select('bidder_id, amount').eq('year_id', appSettings.activeYearId);
+  if (ePaymentsFish) { if (_silentRefresh) return; setContent(connectionErrorHtml('renderFish()')); return; }
 
   if (allBidderIds.length > 0) {
     const { data: bidderData } = await sb.from('bidders').select('id, bidder_number').in('id', allBidderIds);
@@ -639,7 +688,7 @@ async function renderFish() {
       if (totalPaid <= 0) continue;
       const sortedSales = (yearSales || [])
         .filter(s => s.bidder_id === bidderId)
-        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+        .sort((a, b) => (parseDbTime(a.created_at) - parseDbTime(b.created_at)) || String(a.id).localeCompare(String(b.id)));
       let covered = totalPaid;
       for (const sale of sortedSales) {
         const price = Number(sale.sale_price);
@@ -711,7 +760,7 @@ async function renderFish() {
                             <td><span class="fish-id">${tank.letter}${f.fish_number}</span></td>
                             <td>${f.description}</td>
                             <td>${f.donors ? f.donors.first_name + ' ' + f.donors.last_name : '—'}</td>
-                            <td><span class="badge badge-${(f.type||'').toLowerCase()}">${f.type || '—'}</span></td>
+                            <td><span class="badge ${badgeClass(f.type)}">${f.type || '—'}</span></td>
                             <td>${sold ? `<span class="badge badge-sold">Sold $${fishSale.sale_price}</span>${bidderNum ? ` <span style="font-size:11px;color:#888;font-weight:600;">Bidder #${bidderNum}</span>` : ''}` : '<span class="badge badge-unsold">Available</span>'}</td>
                             <td>${paymentBadge}</td>
                             <td>
@@ -773,7 +822,21 @@ async function renderFish() {
 }
 
 function autoFillFishType() {
-  // Donor logistics type (Dropoff/Pickup) is separate from fish payout type — no auto-fill
+  // Default the fish payout type from the selected donor's logistics type (Dropoff/Pickup).
+  // It's only a default — the user can still pick any payout type afterward, and a programmatic
+  // donor change (edit-modal open) doesn't fire this, so a stored type is left untouched.
+  const donorSelect = document.getElementById('f-donor');
+  const typeSelect = document.getElementById('f-type');
+  if (!donorSelect || !typeSelect) return;
+  const logisticsType = donorSelect.options[donorSelect.selectedIndex]?.dataset?.type;
+  if (!logisticsType) return;
+  for (let i = 0; i < typeSelect.options.length; i++) {
+    if (typeSelect.options[i].value.toLowerCase() === logisticsType.toLowerCase()) {
+      typeSelect.selectedIndex = i;
+      return;
+    }
+  }
+  // No matching payout type → leave the current selection unchanged.
 }
 
 function setActiveTank(letter) {
@@ -843,7 +906,12 @@ async function saveTank() {
     return;
   }
   const { error } = await sb.from('tanks').insert({ letter, description, year_id: appSettings.activeYearId });
-  if (error) { alert('Error: ' + error.message); if (btn) { btn.disabled = false; btn.textContent = 'Create tank'; } return; }
+  if (error) {
+    if (error.code === '23505') { alert('A tank with that letter already exists for this year.'); }
+    else { alert('Error: ' + error.message); }
+    if (btn) { btn.disabled = false; btn.textContent = 'Create tank'; }
+    return;
+  }
   closeModal('tank-modal');
   activeTank = letter;
   renderFish();
@@ -896,7 +964,7 @@ async function deleteFish(id) {
     // Block deletion if this fish has been paid for (FIFO check)
     const [{ data: fishPayments }, { data: fishBidderSales }] = await Promise.all([
       sb.from('payments').select('amount').eq('bidder_id', sale.bidder_id),
-      sb.from('sales').select('fish_id, sale_price, created_at').eq('bidder_id', sale.bidder_id).order('created_at'),
+      sb.from('sales').select('fish_id, sale_price, created_at').eq('bidder_id', sale.bidder_id).order('created_at').order('id'),
     ]);
     const totalPaid = (fishPayments||[]).reduce((s,r) => s+Number(r.amount), 0);
     let covered = totalPaid;
@@ -934,10 +1002,14 @@ async function deleteTank(id) {
     ? ` ${soldCount} fish in this tank have already been sold — deleting will remove those sale records but NOT any payments already taken, leaving buyers appearing overpaid.`
     : '';
   if (!window.confirm(`Delete this tank and ALL ${fishInTank?.length || 0} fish in it? This cannot be undone.${soldWarning}`)) return;
-  for (const fishId of fishIds) {
-    await sb.from('sales').delete().eq('fish_id', fishId);
+  // Delete children before parent (sales → fish → tank). Stop and report on the first
+  // failure so we never leave the tank half-cleared without telling the user.
+  if (fishIds.length > 0) {
+    const { error: salesErr } = await sb.from('sales').delete().in('fish_id', fishIds);
+    if (salesErr) { alert('Could not delete sale records for this tank — nothing further was changed: ' + salesErr.message); return; }
   }
-  await sb.from('fish').delete().eq('tank_id', id);
+  const { error: fishErr } = await sb.from('fish').delete().eq('tank_id', id);
+  if (fishErr) { alert('Could not delete the fish in this tank — the tank was NOT deleted: ' + fishErr.message); return; }
   const { error } = await sb.from('tanks').delete().eq('id', id);
   if (error) { alert('Error: ' + error.message); return; }
   activeTank = 'all';
@@ -949,10 +1021,11 @@ async function deleteTank(id) {
 // ============================================
 async function renderBidders() {
   setContent('<p style="color:#4db8d4;padding:1rem;">Loading bidders...</p>');
-  const { data: bidders } = await sb.from('bidders').select('*').eq('year_id', appSettings.activeYearId).order('bidder_number');
-  const { data: allSales } = await sb.from('sales').select('bidder_id, sale_price').eq('year_id', appSettings.activeYearId);
-  const { data: allMisc } = await sb.from('misc_purchases').select('bidder_id, total_price').eq('year_id', appSettings.activeYearId);
-  const { data: allPayments } = await sb.from('payments').select('bidder_id, amount').eq('year_id', appSettings.activeYearId);
+  const { data: bidders, error: eBidders } = await sb.from('bidders').select('*').eq('year_id', appSettings.activeYearId).order('bidder_number');
+  const { data: allSales, error: eSales } = await sb.from('sales').select('bidder_id, sale_price').eq('year_id', appSettings.activeYearId);
+  const { data: allMisc, error: eMisc } = await sb.from('misc_purchases').select('bidder_id, total_price').eq('year_id', appSettings.activeYearId);
+  const { data: allPayments, error: ePayments } = await sb.from('payments').select('bidder_id, amount').eq('year_id', appSettings.activeYearId);
+  if (eBidders || eSales || eMisc || ePayments) { if (_silentRefresh) return; setContent(connectionErrorHtml('renderBidders()')); return; }
 
   bidderDataCache = {};
   (bidders || []).forEach(b => { bidderDataCache[b.id] = b; });
@@ -1116,9 +1189,10 @@ async function saveBidder() {
 async function deleteBidder(id) {
   const { data: linkedSales } = await sb.from('sales').select('id').eq('bidder_id', id);
   const { data: linkedMisc } = await sb.from('misc_purchases').select('id').eq('bidder_id', id);
-  const totalLinked = (linkedSales?.length || 0) + (linkedMisc?.length || 0);
+  const { data: linkedPayments } = await sb.from('payments').select('id').eq('bidder_id', id);
+  const totalLinked = (linkedSales?.length || 0) + (linkedMisc?.length || 0) + (linkedPayments?.length || 0);
   if (totalLinked > 0) {
-    alert(`Cannot delete this bidder — they have ${linkedSales?.length || 0} sale(s) and ${linkedMisc?.length || 0} misc purchase(s) recorded. Please delete those records first.`);
+    alert(`Cannot delete this bidder — they have ${linkedSales?.length || 0} sale(s), ${linkedMisc?.length || 0} misc purchase(s), and ${linkedPayments?.length || 0} payment(s) recorded. Please delete those records first.`);
     return;
   }
   if (!window.confirm('Delete this bidder? This cannot be undone.')) return;
@@ -1252,11 +1326,12 @@ async function _swSubmit() {
 async function renderScribe() {
   setContent('<p style="color:#4db8d4;padding:1rem;">Loading scribe...</p>');
 
-  const [{ data: tanks }, { data: sales }, { data: scribePayments }] = await Promise.all([
+  const [{ data: tanks, error: eTanks }, { data: sales, error: eSales }, { data: scribePayments, error: ePayments }] = await Promise.all([
     sb.from('tanks').select('*').eq('year_id', appSettings.activeYearId).order('letter'),
     sb.from('sales').select('*, fish(description, fish_number, tanks(letter), donors(first_name, last_name)), bidders(first_name, last_name, bidder_number)').eq('year_id', appSettings.activeYearId).order('created_at', { ascending: false }),
     sb.from('payments').select('bidder_id, amount').eq('year_id', appSettings.activeYearId),
   ]);
+  if (eTanks || eSales || ePayments) { if (_silentRefresh) return; setContent(connectionErrorHtml('renderScribe()')); return; }
 
   // FIFO: determine which fish have been paid for
   const scribePaidFishIds = new Set();
@@ -1264,7 +1339,7 @@ async function renderScribe() {
   for (const bId of scribeBidderIds) {
     const totalPaid = (scribePayments||[]).filter(p => p.bidder_id === bId).reduce((s,r) => s+Number(r.amount), 0);
     if (totalPaid <= 0) continue;
-    const bSales = (sales||[]).filter(s => s.bidder_id === bId).sort((a,b) => new Date(a.created_at)-new Date(b.created_at));
+    const bSales = (sales||[]).filter(s => s.bidder_id === bId).sort((a,b) => (parseDbTime(a.created_at)-parseDbTime(b.created_at)) || String(a.id).localeCompare(String(b.id)));
     let covered = totalPaid;
     for (const s of bSales) {
       const price = Number(s.sale_price);
@@ -1434,7 +1509,7 @@ async function saveEditSale() {
   if (currentSale) {
     const [{ data: curPayments }, { data: curBidderSales }] = await Promise.all([
       sb.from('payments').select('amount').eq('bidder_id', currentSale.bidder_id),
-      sb.from('sales').select('fish_id, sale_price, created_at').eq('bidder_id', currentSale.bidder_id).order('created_at'),
+      sb.from('sales').select('fish_id, sale_price, created_at').eq('bidder_id', currentSale.bidder_id).order('created_at').order('id'),
     ]);
     const totalPaid = (curPayments || []).reduce((s, r) => s + Number(r.amount), 0);
     let covered = totalPaid;
@@ -1511,7 +1586,7 @@ async function deleteSale(id) {
   if (saleToDelete) {
     const [{ data: delPayments }, { data: delBidderSales }] = await Promise.all([
       sb.from('payments').select('amount').eq('bidder_id', saleToDelete.bidder_id),
-      sb.from('sales').select('fish_id, sale_price, created_at').eq('bidder_id', saleToDelete.bidder_id).order('created_at'),
+      sb.from('sales').select('fish_id, sale_price, created_at').eq('bidder_id', saleToDelete.bidder_id).order('created_at').order('id'),
     ]);
     const totalPaid = (delPayments||[]).reduce((s,r) => s+Number(r.amount), 0);
     let covered = totalPaid;
@@ -1585,9 +1660,18 @@ async function renderCheckout() {
 }
 
 async function loadCheckout() {
+  // During silent refresh, preserve any payment values the volunteer is mid-entering so the
+  // 30s auto-refresh doesn't wipe them when it re-renders the checkout card.
+  const _coSnapshot = _silentRefresh ? {
+    amount:  document.getElementById('co-amount')?.value,
+    payment: document.getElementById('co-payment')?.value,
+    ref:     document.getElementById('co-ref')?.value,
+  } : null;
   const bidderNum = parseInt(document.getElementById('co-bidder-num').value);
   if (!bidderNum) { alert('Please enter a bidder number.'); return; }
-  const { data: bidder } = await sb.from('bidders').select('*').eq('bidder_number', bidderNum).eq('year_id', appSettings.activeYearId).single();
+  const { data: bidder, error: bidderErr } = await sb.from('bidders').select('*').eq('bidder_number', bidderNum).eq('year_id', appSettings.activeYearId).single();
+  // PGRST116 = "no rows" (genuinely not found); any other error code is a connection problem.
+  if (bidderErr && bidderErr.code !== 'PGRST116') { if (_silentRefresh) return; document.getElementById('checkout-result').innerHTML = connectionErrorHtml('loadCheckout()'); return; }
   if (!bidder) { document.getElementById('checkout-result').innerHTML = '<div class="alert alert-error">Bidder not found.</div>'; return; }
 
   if (appSettings.membershipPrompt && !bidder.is_member && membershipShownForBidder !== bidder.id) {
@@ -1602,9 +1686,12 @@ async function loadCheckout() {
     }
   }
 
-  const { data: sales } = await sb.from('sales').select('sale_price, fish(description, fish_number, tanks(letter))').eq('bidder_id', bidder.id);
-  const { data: misc } = await sb.from('misc_purchases').select('*').eq('bidder_id', bidder.id);
-  const { data: payments } = await sb.from('payments').select('*').eq('bidder_id', bidder.id).order('created_at');
+  const [{ data: sales, error: eSales }, { data: misc, error: eMisc }, { data: payments, error: ePayments }] = await Promise.all([
+    sb.from('sales').select('sale_price, fish(description, fish_number, tanks(letter))').eq('bidder_id', bidder.id),
+    sb.from('misc_purchases').select('*').eq('bidder_id', bidder.id),
+    sb.from('payments').select('*').eq('bidder_id', bidder.id).order('created_at'),
+  ]);
+  if (eSales || eMisc || ePayments) { if (_silentRefresh) return; document.getElementById('checkout-result').innerHTML = connectionErrorHtml('loadCheckout()'); return; }
 
   const auctionTotal = (sales || []).reduce((s, r) => s + Number(r.sale_price), 0);
   const miscTotal = (misc || []).reduce((s, r) => s + Number(r.total_price), 0);
@@ -1660,7 +1747,7 @@ async function loadCheckout() {
         <p style="font-size:12px;font-weight:bold;color:#1a5f7a;margin-bottom:6px;">Payment history</p>
         ${payments.map(p => `
           <div class="total-row" style="align-items:center;">
-            <span style="font-size:13px;">✓ ${p.payment_method}${p.payment_reference ? ' (' + p.payment_reference + ')' : ''} — ${p.created_at ? new Date(p.created_at).toLocaleDateString() : ''}</span>
+            <span style="font-size:13px;">✓ ${p.payment_method}${p.payment_reference ? ' (' + p.payment_reference + ')' : ''} — ${p.created_at ? parseDbTime(p.created_at).toLocaleDateString() : ''}</span>
             <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
               <span style="color:#0a6640;font-weight:bold;">$${Number(p.amount).toFixed(2)}</span>
               ${lockIf(`<button class="btn btn-danger btn-xs" onclick="refundPayment('${p.id}','${bidder.id}')">Refund</button>`)}
@@ -1702,6 +1789,16 @@ async function loadCheckout() {
       </div>
     </div>
   `;
+
+  // Restore mid-entry payment values after a silent re-render (fields only exist when unpaid).
+  if (_coSnapshot) {
+    const amtEl = document.getElementById('co-amount');
+    const payEl = document.getElementById('co-payment');
+    const refEl = document.getElementById('co-ref');
+    if (amtEl && _coSnapshot.amount !== undefined && _coSnapshot.amount !== '') amtEl.value = _coSnapshot.amount;
+    if (payEl && _coSnapshot.payment) payEl.value = _coSnapshot.payment;
+    if (refEl && _coSnapshot.ref !== undefined) refEl.value = _coSnapshot.ref;
+  }
 }
 
 async function addMembershipFromCheckout() {
@@ -1756,7 +1853,17 @@ async function recordPayment(bidderId, grandTotal) {
   }
   const { error: paymentError } = await sb.from('payments').insert({ bidder_id: bidderId, amount, payment_method, payment_reference, year_id: appSettings.activeYearId });
   if (paymentError) {
-    msg.innerHTML = '<div class="alert alert-error">Error: ' + paymentError.message + '</div>';
+    // The insert may have actually landed before the error surfaced (flaky wifi). Check for a
+    // matching recent payment before inviting a retry that could double-charge the bidder.
+    const { data: recentPayments } = await sb.from('payments').select('amount, created_at').eq('bidder_id', bidderId);
+    const now = Date.now();
+    const maybeDup = (recentPayments || []).some(p =>
+      Math.abs(Number(p.amount) - amount) < 0.01 &&
+      p.created_at && (now - parseDbTime(p.created_at).getTime()) < 90000
+    );
+    msg.innerHTML = maybeDup
+      ? '<div class="alert alert-error">A matching payment may have already been recorded — refresh and check the payment history before retrying.</div>'
+      : '<div class="alert alert-error">Error: ' + paymentError.message + '</div>';
     if (btn) { btn.disabled = false; btn.textContent = '✓ Record payment'; }
     return;
   }
@@ -1833,7 +1940,7 @@ async function printReceipt(bidderId) {
       <table class="receipt-table">
         <thead><tr><th>Method</th><th>Reference</th><th>Date</th><th style="text-align:right;">Amount</th></tr></thead>
         <tbody>
-          ${payments.map(p => `<tr><td>${p.payment_method || '—'}</td><td>${p.payment_reference || '—'}</td><td>${p.created_at ? new Date(p.created_at).toLocaleDateString() : ''}</td><td style="text-align:right;">$${Number(p.amount).toFixed(2)}</td></tr>`).join('')}
+          ${payments.map(p => `<tr><td>${p.payment_method || '—'}</td><td>${p.payment_reference || '—'}</td><td>${p.created_at ? parseDbTime(p.created_at).toLocaleDateString() : ''}</td><td style="text-align:right;">$${Number(p.amount).toFixed(2)}</td></tr>`).join('')}
         </tbody>
       </table>
       <div style="text-align:right;font-size:13px;margin-top:6px;">
@@ -1851,10 +1958,11 @@ async function printReceipt(bidderId) {
 // ============================================
 async function renderMisc() {
   setContent('<p style="color:#4db8d4;padding:1rem;">Loading...</p>');
-  const [{ data: items }, { data: purchases }] = await Promise.all([
+  const [{ data: items, error: eItems }, { data: purchases, error: ePurchases }] = await Promise.all([
     sb.from('misc_items').select('*').eq('year_id', appSettings.activeYearId).order('name'),
     sb.from('misc_purchases').select('*, bidders(first_name, last_name, bidder_number)').eq('year_id', appSettings.activeYearId).order('created_at', { ascending: false }),
   ]);
+  if (eItems || ePurchases) { if (_silentRefresh) return; setContent(connectionErrorHtml('renderMisc()')); return; }
   miscPurchaseDataCache = {};
   (purchases || []).forEach(p => { miscPurchaseDataCache[p.id] = p; });
 
@@ -2033,7 +2141,19 @@ function checkAdminPassword() {
 async function renderAdminPanel() {
   const { data: years } = await sb.from('settings').select('*').order('year', { ascending: false });
   const { data: miscItems } = await sb.from('misc_items').select('*').eq('year_id', appSettings.activeYearId).order('name');
-  const { data: donorTypes } = await sb.from('donor_types').select('*').eq('year_id', appSettings.activeYearId).order('name');
+  let { data: donorTypes } = await sb.from('donor_types').select('*').eq('year_id', appSettings.activeYearId).order('name');
+  // Seed guard: make sure the built-in payout types exist for this year. createNewYear copies
+  // types forward, so this only fires for a year where someone deleted one before this protection.
+  let seededNotice = '';
+  const existingTypeNames = (donorTypes || []).map(dt => String(dt.name).trim().toLowerCase());
+  const missingProtected = PROTECTED_TYPES.filter(p => !existingTypeNames.includes(p.toLowerCase()));
+  if (missingProtected.length > 0) {
+    const { error: seedErr } = await sb.from('donor_types').insert(missingProtected.map(name => ({ name, percentage: 0, year_id: appSettings.activeYearId })));
+    if (!seedErr) {
+      seededNotice = `Built-in type${missingProtected.length > 1 ? 's' : ''} ${missingProtected.join(' and ')} created with 0% — set the payout percentage.`;
+      ({ data: donorTypes } = await sb.from('donor_types').select('*').eq('year_id', appSettings.activeYearId).order('name'));
+    }
+  }
   donorTypeDataCache = {};
   (donorTypes || []).forEach(dt => { donorTypeDataCache[dt.id] = dt; });
   miscItemDataCache = {};
@@ -2073,16 +2193,18 @@ async function renderAdminPanel() {
     ? `<table class="table">
         <thead><tr><th>Type name</th><th>Payout %</th><th>Actions</th></tr></thead>
         <tbody>
-          ${donorTypes.map(dt => `
+          ${donorTypes.map(dt => {
+            const prot = isProtectedType(dt.name);
+            return `
             <tr>
-              <td>${dt.name}</td>
+              <td>${dt.name}${prot ? ' <span class="badge badge-paid">Built-in</span>' : ''}</td>
               <td>${(Number(dt.percentage) * 100).toFixed(0)}%</td>
               <td>
                 <button class="btn btn-warning btn-xs" onclick="openEditDonorTypeModal('${dt.id}')">Edit</button>
-                <button class="btn btn-danger btn-xs" onclick="deleteDonorType('${dt.id}')">Delete</button>
+                ${prot ? '' : `<button class="btn btn-danger btn-xs" onclick="deleteDonorType('${dt.id}')">Delete</button>`}
               </td>
             </tr>
-          `).join('')}
+          `; }).join('')}
         </tbody>
       </table>`
     : '<div class="empty-state">No donor types yet.</div>';
@@ -2122,11 +2244,12 @@ async function renderAdminPanel() {
 
     <div class="card">
       <div class="card-header">
-        <div class="card-header-title">Donor types & payout percentages</div>
+        <div class="card-header-title">Fish payout types</div>
         <button class="btn btn-primary btn-sm" onclick="openDonorTypeModal()">+ Add type</button>
       </div>
       <div class="card-body">
-        <p style="font-size:12px;color:#666;margin-bottom:10px;">These types appear when adding donors and fish. Changing a percentage will update all existing fish of that type in the current year.</p>
+        ${seededNotice ? `<div class="alert alert-success" style="margin-bottom:10px;">${seededNotice}</div>` : ''}
+        <p style="font-size:12px;color:#666;margin-bottom:10px;">These payout categories appear when adding fish. "Dropoff" and "Pickup" are built-in and can't be deleted or renamed. Changing a percentage updates all existing fish of that type in the current year.</p>
         ${donorTypesHtml}
       </div>
     </div>
@@ -2179,7 +2302,7 @@ async function renderAdminPanel() {
       <div class="modal">
         <div class="modal-title" id="donor-type-modal-title">Add donor type</div>
         <input type="hidden" id="dt-id" />
-        <div class="form-group"><label>Type name</label><input id="dt-name" type="text" placeholder="e.g. Pickup, Dropoff, Donation" /></div>
+        <div class="form-group"><label>Type name</label><input id="dt-name" type="text" placeholder="e.g. Premium 50%" /><p id="dt-name-hint" style="display:none;font-size:12px;color:#666;margin-top:4px;">Built-in type — the name can't be changed. You can still adjust its payout %.</p></div>
         <div class="form-group"><label>Payout percentage (%)</label><input id="dt-percent" type="number" min="0" max="100" step="1" placeholder="e.g. 40 for 40%" /></div>
         <div class="modal-actions">
           <button class="btn btn-outline btn-sm" onclick="closeModal('donor-type-modal')">Cancel</button>
@@ -2243,16 +2366,28 @@ async function confirmDeleteYear() {
     alert(`Please type ${yearToDelete.year} exactly to confirm.`); return;
   }
   const yId = yearToDelete.id;
-  await sb.from('sales').delete().eq('year_id', yId);
-  await sb.from('misc_purchases').delete().eq('year_id', yId);
-  await sb.from('payments').delete().eq('year_id', yId);
-  await sb.from('fish').delete().eq('year_id', yId);
-  await sb.from('tanks').delete().eq('year_id', yId);
-  await sb.from('donors').delete().eq('year_id', yId);
-  await sb.from('bidders').delete().eq('year_id', yId);
-  await sb.from('misc_items').delete().eq('year_id', yId);
-  await sb.from('donor_types').delete().eq('year_id', yId);
-  await sb.from('settings').delete().eq('id', yId);
+  // Child-before-parent order satisfies the FKs. Stop on the first failure so we never
+  // claim success on a partially-deleted year.
+  const steps = [
+    ['sales',          () => sb.from('sales').delete().eq('year_id', yId)],
+    ['misc_purchases', () => sb.from('misc_purchases').delete().eq('year_id', yId)],
+    ['payments',       () => sb.from('payments').delete().eq('year_id', yId)],
+    ['fish',           () => sb.from('fish').delete().eq('year_id', yId)],
+    ['tanks',          () => sb.from('tanks').delete().eq('year_id', yId)],
+    ['donors',         () => sb.from('donors').delete().eq('year_id', yId)],
+    ['bidders',        () => sb.from('bidders').delete().eq('year_id', yId)],
+    ['misc_items',     () => sb.from('misc_items').delete().eq('year_id', yId)],
+    ['donor_types',    () => sb.from('donor_types').delete().eq('year_id', yId)],
+    ['settings',       () => sb.from('settings').delete().eq('id', yId)],
+  ];
+  for (const [table, run] of steps) {
+    const { error } = await run();
+    if (error) {
+      alert(`Deletion stopped at "${table}": ${error.message}\n\nThe ${yearToDelete.year} year is only PARTIALLY deleted. Do not re-create the year — check the data and try again or resolve manually.`);
+      renderAdminPanel();
+      return;
+    }
+  }
   yearToDelete = null;
   closeModal('delete-year-modal');
   alert('Year deleted successfully.');
@@ -2289,21 +2424,37 @@ async function toggleYearLock() {
   renderAdminPanel();
 }
 
+// "Dropoff" and "Pickup" are permanent built-in fish payout types: they cannot be deleted
+// or renamed (only their percentage is editable). Custom payout categories may be added.
+const PROTECTED_TYPES = ['Dropoff', 'Pickup'];
+function isProtectedType(name) {
+  return PROTECTED_TYPES.some(p => p.toLowerCase() === String(name || '').trim().toLowerCase());
+}
+
 function openDonorTypeModal() {
-  document.getElementById('donor-type-modal-title').textContent = 'Add donor type';
+  document.getElementById('donor-type-modal-title').textContent = 'Add payout type';
   document.getElementById('dt-id').value = '';
-  document.getElementById('dt-name').value = '';
+  const nameInput = document.getElementById('dt-name');
+  nameInput.value = '';
+  nameInput.readOnly = false;
   document.getElementById('dt-percent').value = '';
+  const hint = document.getElementById('dt-name-hint');
+  if (hint) hint.style.display = 'none';
   document.getElementById('donor-type-modal').classList.add('open');
 }
 
 function openEditDonorTypeModal(id) {
   const dt = donorTypeDataCache[id];
   if (!dt) return;
-  document.getElementById('donor-type-modal-title').textContent = 'Edit donor type';
+  const protectedType = isProtectedType(dt.name);
+  document.getElementById('donor-type-modal-title').textContent = protectedType ? 'Edit built-in type' : 'Edit payout type';
   document.getElementById('dt-id').value = dt.id;
-  document.getElementById('dt-name').value = dt.name;
+  const nameInput = document.getElementById('dt-name');
+  nameInput.value = dt.name;
+  nameInput.readOnly = protectedType; // built-in names can't be changed
   document.getElementById('dt-percent').value = (Number(dt.percentage) * 100).toFixed(0);
+  const hint = document.getElementById('dt-name-hint');
+  if (hint) hint.style.display = protectedType ? 'block' : 'none';
   document.getElementById('donor-type-modal').classList.add('open');
 }
 
@@ -2320,10 +2471,19 @@ async function saveDonorType() {
   if (id) {
     const oldType = donorTypeDataCache[id];
     const oldName = oldType ? oldType.name : name;
-    const { error } = await sb.from('donor_types').update({ name, percentage }).eq('id', id);
+    // Built-in types can't be renamed — only their percentage changes. For them the name
+    // stays put, so the fish update below simply re-propagates the (possibly new) percentage.
+    const effectiveName = (oldType && isProtectedType(oldType.name)) ? oldType.name : name;
+    // Update dependent fish FIRST as a single bulk call. If this fails, the donor_types
+    // row is left untouched, so the type name and its fish never drift out of sync.
+    if (oldName) {
+      const { error: fishErr } = await sb.from('fish')
+        .update({ type: effectiveName, donor_percent: percentage })
+        .eq('year_id', appSettings.activeYearId).eq('type', oldName);
+      if (fishErr) { alert('Could not update the fish of this type — no changes were saved: ' + fishErr.message); if (btn) { btn.disabled = false; btn.textContent = 'Save type'; } return; }
+    }
+    const { error } = await sb.from('donor_types').update({ name: effectiveName, percentage }).eq('id', id);
     if (error) { alert('Error: ' + error.message); if (btn) { btn.disabled = false; btn.textContent = 'Save type'; } return; }
-    const { data: linkedFish } = await sb.from('fish').select('id').eq('year_id', appSettings.activeYearId).eq('type', oldName);
-    for (const f of (linkedFish || [])) { await sb.from('fish').update({ type: name, donor_percent: percentage }).eq('id', f.id); }
   } else {
     const { error } = await sb.from('donor_types').insert({ name, percentage, year_id: appSettings.activeYearId });
     if (error) { alert('Error: ' + error.message); if (btn) { btn.disabled = false; btn.textContent = 'Save type'; } return; }
@@ -2334,12 +2494,15 @@ async function saveDonorType() {
 
 async function deleteDonorType(id) {
   const { data: dt } = await sb.from('donor_types').select('name').eq('id', id).single();
+  if (isProtectedType(dt?.name)) { alert('Dropoff and Pickup are built-in types and cannot be deleted.'); return; }
+  // Only fish.type usage blocks a custom payout type. Donors use logistics types (constrained
+  // to Pickup/Dropoff/Donation), which only overlap the built-in names handled above — so a
+  // donor never blocks deletion of a custom type.
   const { data: linkedFish } = await sb.from('fish').select('id').eq('year_id', appSettings.activeYearId).eq('type', dt?.name);
-  const { data: linkedDonors } = await sb.from('donors').select('id').eq('year_id', appSettings.activeYearId).eq('type', dt?.name);
-  const totalLinked = (linkedFish?.length || 0) + (linkedDonors?.length || 0);
-  if (totalLinked > 0) { alert(`Cannot delete "${dt?.name}" — it is used by ${linkedDonors?.length || 0} donor(s) and ${linkedFish?.length || 0} fish.`); return; }
-  if (!window.confirm(`Delete the "${dt?.name}" donor type?`)) return;
-  await sb.from('donor_types').delete().eq('id', id);
+  if ((linkedFish?.length || 0) > 0) { alert(`Cannot delete "${dt?.name}" — it is assigned to ${linkedFish.length} fish. Reassign those fish to another type first.`); return; }
+  if (!window.confirm(`Delete the "${dt?.name}" payout type?`)) return;
+  const { error } = await sb.from('donor_types').delete().eq('id', id);
+  if (error) { alert('Error: ' + error.message); return; }
   renderAdminPanel();
 }
 
@@ -2391,11 +2554,20 @@ async function saveMiscItem() {
     const { error } = await sb.from('misc_items').insert({ name, unit_price, is_quantity_based, club_cost, year_id: appSettings.activeYearId });
     if (error) { alert('Error: ' + error.message); if (btn) { btn.disabled = false; btn.textContent = 'Save item'; } return; }
   }
-  // Backfill club_cost_total on all existing purchases for this item
-  const { data: existingPurchases } = await sb.from('misc_purchases')
+  // Backfill club_cost_total on all existing purchases for this item. Each row's total
+  // depends on its own quantity, so this stays a loop — but capture failures instead of
+  // silently ignoring them (the item itself is already saved at this point).
+  const { data: existingPurchases, error: backfillFetchErr } = await sb.from('misc_purchases')
     .select('id, quantity').eq('item_name', name).eq('year_id', appSettings.activeYearId);
-  for (const p of (existingPurchases || [])) {
-    await sb.from('misc_purchases').update({ club_cost_total: Number(p.quantity) * club_cost }).eq('id', p.id);
+  if (backfillFetchErr) {
+    alert('Item saved, but its existing purchases could not be re-costed (connection problem). Re-save the item to retry.');
+  } else {
+    let backfillFailures = 0;
+    for (const p of (existingPurchases || [])) {
+      const { error: upErr } = await sb.from('misc_purchases').update({ club_cost_total: Number(p.quantity) * club_cost }).eq('id', p.id);
+      if (upErr) backfillFailures++;
+    }
+    if (backfillFailures > 0) { alert(`Item saved, but ${backfillFailures} existing purchase(s) could not be re-costed. Re-save the item to retry.`); }
   }
   closeModal('misc-item-modal');
   renderAdminPanel();
@@ -2431,20 +2603,41 @@ async function switchYear(yearId) {
 async function createNewYear() {
   const year = parseInt(document.getElementById('new-year').value);
   if (!year) { alert('Please enter a valid year.'); return; }
-  const { data: existing } = await sb.from('settings').select('id').eq('year', year);
+  const { data: existing, error: existErr } = await sb.from('settings').select('id').eq('year', year);
+  if (existErr) { alert('Could not check existing years — no changes made: ' + existErr.message); return; }
   if (existing && existing.length > 0) { alert(`An auction year for ${year} already exists.`); return; }
   if (!window.confirm(`Create a new auction year for ${year}? This will become the active year.`)) return;
+  const prevActiveYearId = appSettings.activeYearId;
   const title = `${year} Re-Homing Auction`;
-  const { data, error } = await sb.from('settings').insert({ year, title, admin_password: appSettings.adminPassword, is_active: true }).select().single();
-  if (error) { alert('Error: ' + error.message); return; }
-  await sb.from('settings').update({ is_active: false }).neq('id', data.id);
-  const { data: prevMiscItems } = await sb.from('misc_items').select('*').eq('year_id', appSettings.activeYearId);
-  for (const item of (prevMiscItems || [])) {
-    await sb.from('misc_items').insert({ name: item.name, unit_price: item.unit_price, is_quantity_based: item.is_quantity_based, club_cost: item.club_cost || 0, year_id: data.id });
+  // Insert the new row as INACTIVE first, so there is never a window with two active years.
+  // This is what makes the function compatible with the Phase 4 single-active unique index.
+  const { data, error } = await sb.from('settings').insert({ year, title, admin_password: appSettings.adminPassword, is_active: false }).select().single();
+  if (error) { alert('Error creating the year — no changes made: ' + error.message); return; }
+  // Copy misc items and donor types forward as single bulk inserts (one request each).
+  const { data: prevMiscItems } = await sb.from('misc_items').select('*').eq('year_id', prevActiveYearId);
+  if (prevMiscItems && prevMiscItems.length > 0) {
+    const { error: miErr } = await sb.from('misc_items').insert(prevMiscItems.map(item => ({ name: item.name, unit_price: item.unit_price, is_quantity_based: item.is_quantity_based, club_cost: item.club_cost || 0, year_id: data.id })));
+    if (miErr) { alert(`Year ${year} created, but misc items did not copy over: ${miErr.message}\nYou can re-add them in Admin.`); }
   }
-  const { data: prevDonorTypes } = await sb.from('donor_types').select('*').eq('year_id', appSettings.activeYearId);
-  for (const dt of (prevDonorTypes || [])) {
-    await sb.from('donor_types').insert({ name: dt.name, percentage: dt.percentage, year_id: data.id });
+  const { data: prevDonorTypes } = await sb.from('donor_types').select('*').eq('year_id', prevActiveYearId);
+  if (prevDonorTypes && prevDonorTypes.length > 0) {
+    const { error: dtErr } = await sb.from('donor_types').insert(prevDonorTypes.map(dt => ({ name: dt.name, percentage: dt.percentage, year_id: data.id })));
+    if (dtErr) { alert(`Year ${year} created, but donor types did not copy over: ${dtErr.message}\nYou can re-add them in Admin.`); }
+  }
+  // Flip active: deactivate all others, THEN activate the new row (never two active at once).
+  const { error: deactErr } = await sb.from('settings').update({ is_active: false }).neq('id', data.id);
+  if (deactErr) {
+    alert('Could not switch to the new year (deactivating the old year failed): ' + deactErr.message + '\nThe previous year is still active; the new year exists but is inactive.');
+    renderAdminPanel();
+    return;
+  }
+  const { error: actErr } = await sb.from('settings').update({ is_active: true }).eq('id', data.id);
+  if (actErr) {
+    // Don't strand the app with zero active years — restore the previous active year.
+    if (prevActiveYearId) await sb.from('settings').update({ is_active: true }).eq('id', prevActiveYearId);
+    alert('Could not activate the new year: ' + actErr.message + '\nReverted to the previous active year. The new year exists but is inactive.');
+    renderAdminPanel();
+    return;
   }
   appSettings.activeYearId = data.id;
   appSettings.auctionYear = data.year;
@@ -2641,7 +2834,7 @@ async function exportCSV(table, btn = null) {
 
   } else if (table === 'sales') {
     const [{ data }, { data: salesPayments }] = await Promise.all([
-      sb.from('sales').select('*, fish(description, fish_number, tanks(letter)), bidders(first_name, last_name, bidder_number)').eq('year_id', appSettings.activeYearId).order('created_at'),
+      sb.from('sales').select('*, fish(description, fish_number, tanks(letter)), bidders(first_name, last_name, bidder_number)').eq('year_id', appSettings.activeYearId).order('created_at').order('id'),
       sb.from('payments').select('bidder_id, amount').eq('year_id', appSettings.activeYearId),
     ]);
     // Compute per-fish paid status using FIFO allocation
@@ -2650,7 +2843,7 @@ async function exportCSV(table, btn = null) {
     for (const bId of expBidderIds) {
       const totalPaid = (salesPayments||[]).filter(p => p.bidder_id === bId).reduce((s,r) => s+Number(r.amount), 0);
       if (totalPaid <= 0) continue;
-      const bSales = (data||[]).filter(s => s.bidder_id === bId).sort((a,b) => new Date(a.created_at)-new Date(b.created_at));
+      const bSales = (data||[]).filter(s => s.bidder_id === bId).sort((a,b) => (parseDbTime(a.created_at)-parseDbTime(b.created_at)) || String(a.id).localeCompare(String(b.id)));
       let covered = totalPaid;
       for (const s of bSales) {
         const price = Number(s.sale_price);
