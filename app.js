@@ -990,13 +990,43 @@ async function deleteFish(id) {
   renderFish();
 }
 
+// FIFO paid-status, the same allocation deleteFish uses: walk a bidder's sales oldest-first,
+// subtracting each price from their total paid (0.01 epsilon), and collect the fish_ids that
+// are fully covered. `sales` must be ordered created_at ascending (then id) by the caller.
+function fifoPaidFishIds(payments, sales) {
+  let covered = (payments || []).reduce((s, r) => s + Number(r.amount), 0);
+  const paid = new Set();
+  for (const s of (sales || [])) {
+    const price = Number(s.sale_price);
+    if (covered >= price - 0.01) { paid.add(s.fish_id); covered -= price; } else break;
+  }
+  return paid;
+}
+
 async function deleteTank(id) {
   const { data: fishInTank } = await sb.from('fish').select('id').eq('tank_id', id);
   const fishIds = (fishInTank || []).map(f => f.id);
   let soldCount = 0;
+  const paidFishInTank = new Set();
   if (fishIds.length > 0) {
-    const { data: soldFish } = await sb.from('sales').select('id').in('fish_id', fishIds);
-    soldCount = soldFish ? soldFish.length : 0;
+    const { data: tankSales } = await sb.from('sales').select('id, bidder_id').in('fish_id', fishIds);
+    soldCount = tankSales ? tankSales.length : 0;
+    // Block deletion if ANY fish in the tank is paid for (same FIFO check deleteFish runs) —
+    // deleting a paid fish would orphan its payment and corrupt the buyer's other fish' paid
+    // status. Check each bidder who bought into this tank, oldest-first across ALL their sales.
+    const tankBidderIds = [...new Set((tankSales || []).map(s => s.bidder_id))].filter(Boolean);
+    for (const bidderId of tankBidderIds) {
+      const [{ data: bidderPayments }, { data: bidderSales }] = await Promise.all([
+        sb.from('payments').select('amount').eq('bidder_id', bidderId),
+        sb.from('sales').select('fish_id, sale_price, created_at').eq('bidder_id', bidderId).order('created_at').order('id'),
+      ]);
+      const paid = fifoPaidFishIds(bidderPayments, bidderSales);
+      for (const fid of fishIds) { if (paid.has(fid)) paidFishInTank.add(fid); }
+    }
+  }
+  if (paidFishInTank.size > 0) {
+    alert(`This tank contains ${paidFishInTank.size} paid fish. Issue refunds in Checkout first if you need to delete it.`);
+    return;
   }
   const soldWarning = soldCount > 0
     ? ` ${soldCount} fish in this tank have already been sold — deleting will remove those sale records but NOT any payments already taken, leaving buyers appearing overpaid.`
