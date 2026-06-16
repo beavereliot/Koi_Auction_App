@@ -568,18 +568,31 @@ body {
 /* ─── Print ──────────────────────────────────── */
 @page { margin: 1cm; }
 @media print {
-  body { background: white !important; }
+  /* Reset the page so the receipt always begins at the very top with no
+     leftover app chrome or colored background, on every browser/device. */
+  html, body {
+    background: #fff !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    height: auto !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
   .app { display: none !important; }
+  /* Normal document flow (NOT position:fixed) so long receipts paginate
+     instead of being clipped to a single page. */
   #print-area {
     display: block !important;
-    background: white !important;
-    position: fixed;
-    top: 0; left: 0; width: 100%;
+    background: #fff !important;
+    margin: 0 auto;
+    padding: 0;
+    width: 100%;
   }
+  .receipt { margin: 0 auto !important; }
 }
 #print-area { display: none; }
 .receipt {
-  font-family: Arial, sans-serif; background: white !important;
+  font-family: Arial, sans-serif; background: #fff !important;
   max-width: 500px; margin: 0 auto; padding: 30px; color: #000 !important;
 }
 .receipt-header { text-align: center; margin-bottom: 20px; }
