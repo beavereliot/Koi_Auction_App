@@ -208,6 +208,7 @@ async function loadBidderCache() {
 // Entity caches: populated on each render so edit modals never use JSON-in-onclick (breaks on apostrophes)
 let donorDataCache = {};
 let fishDataCache = {};
+let tankDataCache = {};
 let bidderDataCache = {};
 let miscPurchaseDataCache = {};
 let donorTypeDataCache = {};
@@ -703,6 +704,8 @@ async function renderFish() {
   (fish || []).forEach(f => { fishDataCache[f.id] = f; });
   const tankFish = (tankLetter) => fish ? fish.filter(f => f.tanks?.letter === tankLetter) : [];
   const allTanks = tanks || [];
+  tankDataCache = {};
+  allTanks.forEach(t => { tankDataCache[t.id] = t; });
   const noDonors = allDonorsForFish.length === 0;
 
   const donorOptions = noDonors
@@ -738,6 +741,7 @@ async function renderFish() {
               </div>
               <div style="display:flex;gap:6px;">
                 ${lockIf(`<button class="btn btn-primary btn-sm" onclick="openFishModal('${tank.id}','${tank.letter}')">+ Add fish</button>
+                <button class="btn btn-warning btn-xs" onclick="openEditTankModal('${tank.id}')">Edit tank</button>
                 <button class="btn btn-danger btn-xs" onclick="deleteTank('${tank.id}')">Delete tank</button>`)}
               </div>
             </div>
@@ -789,7 +793,8 @@ async function renderFish() {
 
     <div class="modal-overlay" id="tank-modal">
       <div class="modal">
-        <div class="modal-title">Create new tank</div>
+        <div class="modal-title" id="tank-modal-title">Create new tank</div>
+        <input type="hidden" id="t-id" />
         <div class="form-group"><label>Tank letter</label><input id="t-letter" type="text" maxlength="3" placeholder="e.g. A, B, F" /></div>
         <div class="form-group"><label>Description (optional)</label><input id="t-desc" type="text" placeholder="e.g. Large koi" /></div>
         <div class="modal-actions">
@@ -845,8 +850,26 @@ function setActiveTank(letter) {
 }
 
 function openTankModal() {
+  document.getElementById('tank-modal-title').textContent = 'Create new tank';
+  document.getElementById('t-id').value = '';
   document.getElementById('t-letter').value = '';
+  document.getElementById('t-letter').disabled = false;
   document.getElementById('t-desc').value = '';
+  const btn = document.getElementById('save-tank-btn');
+  if (btn) btn.textContent = 'Create tank';
+  document.getElementById('tank-modal').classList.add('open');
+}
+
+function openEditTankModal(id) {
+  const tank = tankDataCache[id];
+  if (!tank) return;
+  document.getElementById('tank-modal-title').textContent = 'Edit tank';
+  document.getElementById('t-id').value = tank.id;
+  document.getElementById('t-letter').value = tank.letter;
+  document.getElementById('t-letter').disabled = false;
+  document.getElementById('t-desc').value = tank.description || '';
+  const btn = document.getElementById('save-tank-btn');
+  if (btn) btn.textContent = 'Save changes';
   document.getElementById('tank-modal').classList.add('open');
 }
 
@@ -897,19 +920,27 @@ async function openEditFishModal(id) {
 async function saveTank() {
   const btn = document.getElementById('save-tank-btn');
   if (btn && btn.disabled) return;
+  const tankId = document.getElementById('t-id').value;
+  const isEdit = !!tankId;
+  const restoreLabel = isEdit ? 'Save changes' : 'Create tank';
   if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
   const letter = document.getElementById('t-letter').value.trim().toUpperCase();
   const description = document.getElementById('t-desc').value.trim();
   if (!letter) {
     alert('Please enter a tank letter.');
-    if (btn) { btn.disabled = false; btn.textContent = 'Create tank'; }
+    if (btn) { btn.disabled = false; btn.textContent = restoreLabel; }
     return;
   }
-  const { error } = await sb.from('tanks').insert({ letter, description, year_id: appSettings.activeYearId });
+  let error;
+  if (isEdit) {
+    ({ error } = await sb.from('tanks').update({ letter, description }).eq('id', tankId).eq('year_id', appSettings.activeYearId));
+  } else {
+    ({ error } = await sb.from('tanks').insert({ letter, description, year_id: appSettings.activeYearId }));
+  }
   if (error) {
     if (error.code === '23505') { alert('A tank with that letter already exists for this year.'); }
     else { alert('Error: ' + error.message); }
-    if (btn) { btn.disabled = false; btn.textContent = 'Create tank'; }
+    if (btn) { btn.disabled = false; btn.textContent = restoreLabel; }
     return;
   }
   closeModal('tank-modal');
