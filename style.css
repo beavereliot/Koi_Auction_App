@@ -566,7 +566,10 @@ body {
 }
 
 /* ─── Print ──────────────────────────────────── */
-@page { margin: 1cm; }
+/* margin:0 makes browsers drop their auto headers/footers (the page URL and
+   date they otherwise stamp on the printout). Whitespace is restored via the
+   receipt's own padding below so content doesn't touch the paper edge. */
+@page { margin: 0; }
 @media print {
   /* Reset the page so the receipt always begins at the very top with no
      leftover app chrome or colored background, on every browser/device. */
@@ -588,7 +591,9 @@ body {
     padding: 0;
     width: 100%;
   }
-  .receipt { margin: 0 auto !important; }
+  /* Restore inset whitespace lost to @page margin:0 so the receipt has a
+     safe printable border on every page. */
+  .receipt { margin: 0 auto !important; padding: 1cm 30px !important; }
 }
 #print-area { display: none; }
 .receipt {
