@@ -769,7 +769,8 @@ async function renderFish() {
                             <td>${paymentBadge}</td>
                             <td>
                               ${paidFishIds.has(f.id)
-                                ? '<span style="font-size:11px;color:#0a6640;font-weight:600;">🔒 Paid</span>'
+                                ? `<span style="font-size:11px;color:#0a6640;font-weight:600;">🔒 Paid</span>
+                              ${lockIf(`<button class="btn btn-warning btn-xs" onclick="openEditFishDonorModal('${f.id}')">Edit donor</button>`)}`
                                 : lockIf(`<button class="btn btn-warning btn-xs" onclick="openEditFishModal('${f.id}')">Edit</button>
                               <button class="btn btn-danger btn-xs" onclick="deleteFish('${f.id}')">Delete</button>`)}
                             </td>
@@ -809,6 +810,7 @@ async function renderFish() {
         <div class="modal-title" id="fish-modal-title">Add fish</div>
         <input type="hidden" id="fish-modal-tank-id" />
         <input type="hidden" id="f-id" />
+        <input type="hidden" id="f-donor-only" />
         <div class="form-group"><label>Fish #</label><input id="f-num" type="number" min="1" step="1" /></div>
         <div class="form-group"><label>Description</label><input id="f-desc" type="text" placeholder="e.g. Kohaku, Tancho..." /></div>
         <div class="form-group"><label>Donor</label>
@@ -878,6 +880,8 @@ async function openFishModal(tankId, tankLetter) {
     alert('Please add at least one donor before adding fish.');
     return;
   }
+  document.getElementById('f-donor-only').value = '';
+  setFishFieldsLocked(false);
   document.getElementById('fish-modal-title').textContent = 'Add fish to Tank ' + tankLetter;
   document.getElementById('fish-modal-tank-id').value = tankId;
   document.getElementById('f-id').value = '';
@@ -896,9 +900,31 @@ async function openFishModal(tankId, tankLetter) {
   }
 }
 
+function selectDonorOption(donorId) {
+  const donorSelect = document.getElementById('f-donor');
+  if (donorSelect && donorId) {
+    for (let i = 0; i < donorSelect.options.length; i++) {
+      if (donorSelect.options[i].value === donorId) {
+        donorSelect.selectedIndex = i; break;
+      }
+    }
+  }
+}
+
+// Re-enable the fields that donor-only mode disables, so the regular add/edit
+// flows are never left with locked inputs from a previous donor-only open.
+function setFishFieldsLocked(locked) {
+  ['f-num', 'f-desc'].forEach(elId => {
+    const el = document.getElementById(elId);
+    if (el) el.disabled = locked;
+  });
+}
+
 async function openEditFishModal(id) {
   const f = fishDataCache[id];
   if (!f) return;
+  document.getElementById('f-donor-only').value = '';
+  setFishFieldsLocked(false);
   document.getElementById('fish-modal-title').textContent = 'Edit fish';
   document.getElementById('fish-modal-tank-id').value = f.tank_id;
   document.getElementById('f-id').value = f.id;
@@ -907,14 +933,27 @@ async function openEditFishModal(id) {
   document.getElementById('fish-modal').classList.add('open');
   await populateDonorTypeSelects();
   document.getElementById('f-type').value = f.type || '';
-  const donorSelect = document.getElementById('f-donor');
-  if (donorSelect && f.donor_id) {
-    for (let i = 0; i < donorSelect.options.length; i++) {
-      if (donorSelect.options[i].value === f.donor_id) {
-        donorSelect.selectedIndex = i; break;
-      }
-    }
-  }
+  selectDonorOption(f.donor_id);
+}
+
+// Paid fish stay locked, but the donor + donor type remain editable because they
+// only affect how much the society pays the donor — never the buyer's payment or
+// FIFO allocation (which use sale_price/created_at). Fish # and description stay
+// locked; save writes only donor_id/type/donor_percent.
+async function openEditFishDonorModal(id) {
+  const f = fishDataCache[id];
+  if (!f) return;
+  document.getElementById('f-donor-only').value = '1';
+  setFishFieldsLocked(true);
+  document.getElementById('fish-modal-title').textContent = 'Edit donor (paid fish)';
+  document.getElementById('fish-modal-tank-id').value = f.tank_id;
+  document.getElementById('f-id').value = f.id;
+  document.getElementById('f-num').value = f.fish_number;
+  document.getElementById('f-desc').value = f.description;
+  document.getElementById('fish-modal').classList.add('open');
+  await populateDonorTypeSelects();
+  document.getElementById('f-type').value = f.type || '';
+  selectDonorOption(f.donor_id);
 }
 
 async function saveTank() {
@@ -958,7 +997,8 @@ async function saveFish() {
   const description = document.getElementById('f-desc').value.trim();
   const donor_id = document.getElementById('f-donor').value;
   const type = document.getElementById('f-type').value;
-  if (!fish_number || fish_number < 1 || !description) {
+  const donorOnly = document.getElementById('f-donor-only').value === '1';
+  if (!donorOnly && (!fish_number || fish_number < 1 || !description)) {
     alert('Please fill in a valid fish # and description.');
     if (btn) { btn.disabled = false; btn.textContent = 'Save fish'; }
     return;
@@ -967,7 +1007,16 @@ async function saveFish() {
   const { data: dtData } = await sb.from('donor_types').select('percentage').eq('name', type).eq('year_id', appSettings.activeYearId).single();
   const donor_percent = dtData ? Number(dtData.percentage) : 0;
 
-  if (id) {
+  if (donorOnly) {
+    // Paid fish: only the donor assignment and payout type may change. Never
+    // touch fish_number/description so the lock's protections stay intact.
+    const { error } = await sb.from('fish').update({ donor_id, type, donor_percent }).eq('id', id);
+    if (error) {
+      alert('Error: ' + error.message);
+      if (btn) { btn.disabled = false; btn.textContent = 'Save fish'; }
+      return;
+    }
+  } else if (id) {
     const { error } = await sb.from('fish').update({ fish_number, description, donor_id, type, donor_percent }).eq('id', id);
     if (error) {
       if (error.code === '23505') { alert('A fish with that number already exists in this tank.'); }
