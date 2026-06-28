@@ -57,6 +57,7 @@ document.querySelectorAll('.nav-item').forEach(item => {
     document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
     item.classList.add('active');
     history.pushState({ page: item.dataset.page }, '');
+    _scrollToTopOnNextRender = true;   // switching pages should start at the top
     loadPage(item.dataset.page);
   });
 });
@@ -89,6 +90,7 @@ window.addEventListener('popstate', e => {
 
   const page = e.state?.page || 'dashboard';
   document.querySelectorAll('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.page === page));
+  _scrollToTopOnNextRender = true;   // back/forward to a different page starts at the top
   loadPage(page);
 });
 
@@ -128,23 +130,46 @@ function loadPage(page) {
 // (entity encoding, attribute normalization) so it almost never equals the raw template,
 // which made silent refresh re-render every cycle and wipe unfocused form input.
 let _lastRenderedHtml = '';
+// Set true right before a genuine page navigation so the next render lands at the
+// top. Every other re-render (edits, deletes, silent refresh) preserves the user's
+// current scroll position so they aren't yanked to the top after each action.
+let _scrollToTopOnNextRender = false;
+// The scroll position to restore once a render cycle finishes. A render starts with
+// a short "Loading..." placeholder (which collapses the page to ~0 height) and ends
+// with the real content. We capture the user's position when the placeholder appears
+// — before the collapse — and restore it on every render until the content lands, so
+// the placeholder can't strand them at the top.
+let _pendingScrollY = 0;
 function setContent(html) {
   const banner = appSettings.isLocked
     ? '<div class="lock-banner">🔒 This year is locked — read-only. Unlock in Admin to make changes.</div>'
     : '';
   const full = banner + html;
   const main = document.getElementById('main-content');
+  const isLoadingPlaceholder = html.length < 200;
   if (_silentRefresh) {
-    if (html.length < 200) return;           // skip loading placeholder flash
+    if (isLoadingPlaceholder) return;        // skip loading placeholder flash
     if (full === _lastRenderedHtml) return;  // no data change — do nothing
+    const prevScroll = window.scrollY;
     main.classList.add('sr-updated');        // subtle fade-in on actual change
     main.innerHTML = full;
     _lastRenderedHtml = full;
     setTimeout(() => main.classList.remove('sr-updated'), 250);
+    requestAnimationFrame(() => window.scrollTo(0, prevScroll));
     return;
+  }
+  if (_scrollToTopOnNextRender) {
+    _pendingScrollY = 0;                      // navigation: whole cycle targets the top
+    _scrollToTopOnNextRender = false;
+  } else if (isLoadingPlaceholder) {
+    _pendingScrollY = window.scrollY;         // start of in-place render: remember position
   }
   main.innerHTML = full;
   _lastRenderedHtml = full;
+  // Restore on the next frame so the browser's innerHTML reset doesn't strand the
+  // user at the top. Anchored to _pendingScrollY (captured pre-collapse), not the
+  // live scrollY, which the loading placeholder has already clamped to ~0.
+  requestAnimationFrame(() => window.scrollTo(0, _pendingScrollY));
 }
 
 function lockIf(html) {
