@@ -2846,11 +2846,15 @@ async function exportCSV(table, btn = null) {
     ws.mergeCells(r2.number, 1, r2.number, numCols);
   }
 
-  function addHeaders(ws, headers, numCols) {
+  function addHeaders(ws, headers, numCols, opts) {
     const r = ws.addRow(headers);
     r.height = 16;
     headers.forEach((_, ci) => styleCell(r.getCell(ci + 1), S.header()));
-    ws.autoFilter = { from: `A${r.number}`, to: `${ws.getColumn(numCols).letter}${r.number}` };
+    // Filter/sort arrows are skipped on grouped sheets (e.g. donor payouts), where
+    // sorting would scramble the per-donor sections — so the arrows don't function.
+    if (!opts?.noFilter) {
+      ws.autoFilter = { from: `A${r.number}`, to: `${ws.getColumn(numCols).letter}${r.number}` };
+    }
     ws.views = [{ state:'frozen', ySplit:r.number, topLeftCell:`A${r.number + 1}` }];
   }
 
@@ -3019,7 +3023,7 @@ async function exportCSV(table, btn = null) {
   } else if (table === 'donor_payouts') {
     const [{ data: donors }, { data: fish }, { data: salesData }] = await Promise.all([
       sb.from('donors').select('*').eq('year_id', appSettings.activeYearId).order('last_name'),
-      sb.from('fish').select('id, fish_number, description, donor_id, donor_percent, tanks(letter)').eq('year_id', appSettings.activeYearId),
+      sb.from('fish').select('id, fish_number, description, donor_id, donor_percent, type, tanks(letter)').eq('year_id', appSettings.activeYearId),
       sb.from('sales').select('fish_id, sale_price').eq('year_id', appSettings.activeYearId),
     ]);
     const salePriceMap = {};
@@ -3027,7 +3031,7 @@ async function exportCSV(table, btn = null) {
     const ws = workbook.addWorksheet('Donor Payouts');
     const numCols = 7;
     addTitleBlock(ws, title, subtitle, numCols);
-    addHeaders(ws, ['Donor', 'Type', 'Payout %', 'Fish ID', 'Description', 'Sale Price', 'Donor Payout'], numCols);
+    addHeaders(ws, ['Donor', 'Type', 'Payout %', 'Fish ID', 'Description', 'Sale Price', 'Donor Payout'], numCols, { noFilter: true });
     for (const donor of (donors||[])) {
       const donorFish = (fish||[]).filter(f => f.donor_id === donor.id);
       const donorName = `${donor.first_name} ${donor.last_name}`;
@@ -3038,7 +3042,7 @@ async function exportCSV(table, btn = null) {
         const fishPercent = Number(f.donor_percent||0);
         const fishPayout = salePrice * fishPercent;
         donorTotal += salePrice; donorPayout += fishPayout;
-        writeRow(ws, [donorName, donor.type, `${(fishPercent*100).toFixed(0)}%`, `${f.tanks?.letter||''}${f.fish_number}`, f.description, salePrice||'', fishPayout||''], {5:RIGHT, 6:RIGHT}, {5:CURR, 6:CURR});
+        writeRow(ws, [donorName, f.type||'', `${(fishPercent*100).toFixed(0)}%`, `${f.tanks?.letter||''}${f.fish_number}`, f.description, salePrice||'', fishPayout||''], {5:RIGHT, 6:RIGHT}, {5:CURR, 6:CURR});
       }
       writeTotalRow(ws, ['','','','','OWED TO DONOR', donorTotal, donorPayout], {4:LEFT, 5:RIGHT, 6:RIGHT}, {5:CURR, 6:CURR});
     }
